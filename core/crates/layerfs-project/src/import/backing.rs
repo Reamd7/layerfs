@@ -14,8 +14,8 @@ use layerfs_storage::port::acquisition::{
 };
 use layerfs_storage::port::PersistenceError;
 use std::{
-    cell::Cell, collections::VecDeque, ffi::OsString, fs::Metadata, os::unix::ffi::OsStringExt,
-    os::unix::fs::MetadataExt, path::PathBuf,
+    cell::Cell, collections::VecDeque, ffi::OsString, fs::Metadata,
+    path::PathBuf,
 };
 
 /// Rows the job queue or one resident child buffer may hold.
@@ -34,16 +34,41 @@ pub(crate) struct Stamp {
     pub ctime_nsec: i64,
 }
 impl Stamp {
+    #[cfg(unix)]
     pub(crate) fn of(metadata: &Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt;
         Self {
             dev: metadata.dev(),
             ino: metadata.ino(),
             len: metadata.len(),
             mode: metadata.mode(),
             mtime: metadata.mtime(),
-            mtime_nsec: metadata.mtime_nsec(),
+            mtime_nsec: metadata.mtime_nsec() as i64,
             ctime: metadata.ctime(),
-            ctime_nsec: metadata.ctime_nsec(),
+            ctime_nsec: metadata.ctime_nsec() as i64,
+        }
+    }
+    /// Windows has no stable volume/index identity in std: the stamp carries
+    /// weak identity (zero device and inode), synthesized mode bits, and
+    /// change evidence from length, mtime and creation time (as ctime).
+    #[cfg(windows)]
+    pub(crate) fn of(metadata: &Metadata) -> Self {
+        use std::os::windows::fs::MetadataExt;
+        Self {
+            dev: 0,
+            ino: 0,
+            len: metadata.len(),
+            mode: if metadata.file_type().is_symlink() {
+                0o777
+            } else if metadata.is_dir() {
+                0o755
+            } else {
+                0o644
+            },
+            mtime: filetime_seconds(metadata.last_write_time()),
+            mtime_nsec: 0,
+            ctime: filetime_seconds(metadata.creation_time()),
+            ctime_nsec: 0,
         }
     }
     /// True while `metadata` is still the same unchanged regular file.
@@ -84,6 +109,13 @@ impl Stamp {
             ctime_nsec: i64::from_be_bytes(field(36)),
         }
     }
+}
+
+/// Windows FILETIME (100 ns since 1601) to whole seconds since 1970.
+#[cfg(windows)]
+fn filetime_seconds(filetime: u64) -> i64 {
+    const DELTA: u64 = 11_644_473_600;
+    (filetime / 10_000_000).saturating_sub(DELTA) as i64
 }
 
 /// Host regular-file paths bound so far, by whether they named a new identity.
@@ -377,7 +409,7 @@ pub(crate) fn window_full(rows: usize, held: usize, bytes: usize) -> bool {
 fn changed_source(error: AcquisitionError, path: impl Fn(u64) -> Option<Vec<u8>>) -> Failure {
     if let AcquisitionError::Changed { position } = error {
         if let Some(path) = path(position) {
-            let path = PathBuf::from(OsString::from_vec(path));
+            let path = PathBuf::from(super::backing::os_from_vec(path));
             return Failure::refused(SourceRefusal::Changed, path);
         }
     }
@@ -480,5 +512,31 @@ impl<'b, 'a, T, K> Stream<'b, 'a, T, K> {
     pub(crate) fn next(&mut self) -> Result<Option<T>, Failure> {
         self.fill()?;
         Ok(self.window.pop_front())
+    }
+}
+
+/// One host path's bytes: exact on Unix, lossy UTF-8 on Windows.
+pub(crate) fn os_bytes(text: &std::ffi::OsStr) -> Vec<u8> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        text.as_bytes().to_vec()
+    }
+    #[cfg(windows)]
+    {
+        text.to_string_lossy().into_owned().into_bytes()
+    }
+}
+
+/// One host path from bytes: exact on Unix, lossy UTF-8 on Windows.
+pub(crate) fn os_from_vec(bytes: Vec<u8>) -> std::ffi::OsString {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        std::ffi::OsString::from_vec(bytes)
+    }
+    #[cfg(windows)]
+    {
+        std::ffi::OsString::from(String::from_utf8_lossy(&bytes).into_owned())
     }
 }

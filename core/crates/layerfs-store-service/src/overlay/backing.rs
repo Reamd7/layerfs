@@ -43,7 +43,7 @@ impl Backing {
             (metadata.dev(), metadata.ino(), metadata.nlink())
         };
         #[cfg(not(unix))]
-        let (device, inode, links) = (0, 0, 0);
+        let (device, inode, links) = (0, 0, 1);
         if !metadata.is_file() || links != 1 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,

@@ -154,7 +154,7 @@ impl Session {
         creation_layout: crate::SqlitePackLayout,
         creation_acquisition: crate::SqliteAcquisitionSchema,
     ) -> Result<Self, BackendError> {
-        if !cfg!(any(target_os = "macos", target_os = "linux")) {
+        if !cfg!(any(target_os = "macos", target_os = "linux", target_os = "windows")) {
             return Err(BackendError::Integrity);
         }
         let flags = if writable {

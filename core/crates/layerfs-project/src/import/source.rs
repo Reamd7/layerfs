@@ -3,7 +3,6 @@ use crate::{ProjectError, SourceRefusal};
 use layerfs_content::filesystem::symlink::SymlinkTarget;
 use std::{
     fs::{self, Metadata},
-    os::unix::{ffi::OsStrExt, fs::MetadataExt},
     path::Path,
 };
 
@@ -12,21 +11,39 @@ pub(super) fn read_link(path: &Path, scanned: &Metadata) -> Result<Vec<u8>, Proj
     // links. A replaced/changed source is refused without a second read/retry.
     let target = fs::read_link(path)?;
     let after = fs::symlink_metadata(path)?;
-    if !after.file_type().is_symlink()
-        || after.dev() != scanned.dev()
-        || after.ino() != scanned.ino()
-        || after.len() != scanned.len()
-        || after.mode() != scanned.mode()
-        || after.mtime() != scanned.mtime()
-        || after.mtime_nsec() != scanned.mtime_nsec()
-        || after.ctime() != scanned.ctime()
-        || after.ctime_nsec() != scanned.ctime_nsec()
+    #[cfg(unix)]
     {
-        return Err(ProjectError::refused(SourceRefusal::Changed, path));
+        use std::os::unix::fs::MetadataExt;
+        if !after.file_type().is_symlink()
+            || after.dev() != scanned.dev()
+            || after.ino() != scanned.ino()
+            || after.len() != scanned.len()
+            || after.mode() != scanned.mode()
+            || after.mtime() != scanned.mtime()
+            || after.mtime_nsec() != scanned.mtime_nsec()
+            || after.ctime() != scanned.ctime()
+            || after.ctime_nsec() != scanned.ctime_nsec()
+        {
+            return Err(ProjectError::refused(SourceRefusal::Changed, path));
+        }
+    }
+    // Windows has no dev/ino in std: the change evidence is the whole stamp.
+    #[cfg(windows)]
+    {
+        use super::backing::Stamp;
+        if !after.file_type().is_symlink() || Stamp::of(&after) != Stamp::of(scanned) {
+            return Err(ProjectError::refused(SourceRefusal::Changed, path));
+        }
     }
     // Keep the canonical target bound/grammar: no normalization or UTF-8 cast.
-    let target = SymlinkTarget::new(target.as_os_str().as_bytes().to_vec())
-        .map_err(ProjectError::Content)?;
+    #[cfg(unix)]
+    let bytes = {
+        use std::os::unix::ffi::OsStrExt;
+        target.as_os_str().as_bytes().to_vec()
+    };
+    #[cfg(windows)]
+    let bytes = target.to_string_lossy().into_owned().into_bytes();
+    let target = SymlinkTarget::new(bytes).map_err(ProjectError::Content)?;
     Ok(target.as_bytes().to_vec())
 }
 
@@ -41,8 +58,21 @@ pub(super) fn outside_source(source: &Metadata, placement: &Path) -> Result<(), 
     let mut ancestor = fs::canonicalize(placement)?;
     loop {
         let metadata = fs::symlink_metadata(&ancestor)?;
-        if metadata.dev() == source.dev() && metadata.ino() == source.ino() {
-            return Err(ProjectError::BackingInsideSource);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.dev() == source.dev() && metadata.ino() == source.ino() {
+                return Err(ProjectError::BackingInsideSource);
+            }
+        }
+        // Weak Windows identity: compare the whole evidence stamp; an equal
+        // stamp is treated as aliasing and refused on the safe side.
+        #[cfg(windows)]
+        {
+            use super::backing::Stamp;
+            if Stamp::of(&metadata) == Stamp::of(source) {
+                return Err(ProjectError::BackingInsideSource);
+            }
         }
         if !ancestor.pop() {
             return Ok(());

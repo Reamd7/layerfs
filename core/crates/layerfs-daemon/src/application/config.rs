@@ -1,23 +1,37 @@
 //! Actual protected configuration descriptors and process/placement checks.
 use layerfs_bridge::daemon_setup::DaemonSetup;
+#[cfg(unix)]
 use nix::{fcntl::OFlag, unistd::Uid};
-use std::{
-    fs::{self, OpenOptions},
-    io::{self, Read},
-    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
-    path::Path,
-};
+use std::{fs, io::{self, Read}, path::Path};
+#[cfg(unix)]
+use std::fs::OpenOptions;
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+
+/// Opens a protected file without following final-component symlinks. Windows
+/// has no std-level O_NOFOLLOW equivalent; there the hardening is the NTFS ACL
+/// inheritance of the daemon's private tree.
+fn open_private_file(path: &Path) -> io::Result<fs::File> {
+    #[cfg(unix)]
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags((OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC).bits())
+        .open(path);
+    #[cfg(not(unix))]
+    let file = fs::File::open(path);
+    file
+}
 
 pub(super) fn read(path: &Path) -> io::Result<DaemonSetup> {
     secure_process()?;
-    let mut file = OpenOptions::new()
-        .read(true)
-        .custom_flags((OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC).bits())
-        .open(path)?;
-    let metadata = file.metadata()?;
-    let uid = Uid::effective().as_raw();
-    if !metadata.is_file() || metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
-        return Err(invalid("private config ownership/mode/type"));
+    let mut file = open_private_file(path)?;
+    #[cfg(unix)]
+    {
+        let metadata = file.metadata()?;
+        let uid = Uid::effective().as_raw();
+        if !metadata.is_file() || metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
+            return Err(invalid("private config ownership/mode/type"));
+        }
     }
     private_directory(
         path.parent().ok_or_else(|| invalid("config parent"))?,
@@ -29,7 +43,8 @@ pub(super) fn read(path: &Path) -> io::Result<DaemonSetup> {
         return Err(invalid("private config record size"));
     }
     let config = DaemonSetup::decode(&bytes).map_err(|_| invalid("private config fields"))?;
-    if config.command_uid == uid {
+    #[cfg(unix)]
+    if config.command_uid == Uid::effective().as_raw() {
         return Err(invalid("command and daemon identities must differ"));
     }
     // One early reservation restores any value below the refill window; a
@@ -64,16 +79,20 @@ pub(super) fn read(path: &Path) -> io::Result<DaemonSetup> {
     Ok(config)
 }
 pub(super) fn protected_file(path: &Path) -> io::Result<()> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags((OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC).bits())
-        .open(path)?;
-    let metadata = file.metadata()?;
-    if !metadata.is_file()
-        || metadata.uid() != Uid::effective().as_raw()
-        || metadata.mode() & 0o077 != 0
+    // Opening at all proves reachability; ownership/mode checks are Unix-only.
+    #[cfg(unix)]
+    let file = open_private_file(path)?;
+    #[cfg(not(unix))]
+    open_private_file(path)?;
+    #[cfg(unix)]
     {
-        return Err(invalid("protected file ownership/mode/type"));
+        let metadata = file.metadata()?;
+        if !metadata.is_file()
+            || metadata.uid() != Uid::effective().as_raw()
+            || metadata.mode() & 0o077 != 0
+        {
+            return Err(invalid("protected file ownership/mode/type"));
+        }
     }
     Ok(())
 }
@@ -82,20 +101,29 @@ fn private_directory(path: &Path, create: bool) -> io::Result<()> {
         Ok(_) => (),
         Err(error) if create && error.kind() == io::ErrorKind::NotFound => {
             // Exactly one create attempt. A race/failure is not an open fallback.
+            #[cfg(unix)]
             fs::DirBuilder::new().mode(0o700).create(path)?;
+            #[cfg(not(unix))]
+            fs::create_dir(path)?;
         }
         Err(error) => return Err(error),
     }
+    #[cfg(unix)]
     let directory = OpenOptions::new()
         .read(true)
         .custom_flags((OFlag::O_NOFOLLOW | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC).bits())
         .open(path)?;
+    #[cfg(not(unix))]
+    let directory = fs::File::open(path)?;
     let metadata = directory.metadata()?;
-    if !metadata.is_dir()
-        || metadata.uid() != Uid::effective().as_raw()
-        || metadata.mode() & 0o077 != 0
-    {
+    if !metadata.is_dir() {
         return Err(invalid("private directory ownership/mode/type"));
+    }
+    #[cfg(unix)]
+    {
+        if metadata.uid() != Uid::effective().as_raw() || metadata.mode() & 0o077 != 0 {
+            return Err(invalid("private directory ownership/mode/type"));
+        }
     }
     Ok(())
 }

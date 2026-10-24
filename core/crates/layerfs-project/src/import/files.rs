@@ -4,7 +4,7 @@
 //! fixed job queue from the backed identity stream; constructors return bounded
 //! ordered batches, and each constructed root is recorded against its identity
 //! in bounded write windows. Neither queue grows with the acquired root.
-use crate::backing::{Backing, Stamp, WINDOW_ROWS};
+use crate::import::backing::{Backing, Stamp, WINDOW_ROWS};
 use crate::error::ProjectError as Failure;
 use crate::error::{content, malformed, storage, SourceRefusal};
 use crate::{
@@ -19,7 +19,7 @@ use layerfs_telemetry::timer::Timing;
 use std::{
     ffi::{OsStr, OsString},
     fs::{self, File},
-    os::unix::ffi::{OsStrExt, OsStringExt},
+
     path::PathBuf,
     sync::{mpsc, Arc, Mutex},
     time::{Duration, Instant},
@@ -39,7 +39,7 @@ impl Job {
         Self {
             id: job.position,
             stamp: Stamp::from_identity(&job.host),
-            path: PathBuf::from(OsString::from_vec(job.host_path)),
+            path: PathBuf::from(crate::import::backing::os_from_vec(job.host_path)),
         }
     }
 }
@@ -171,7 +171,7 @@ fn check_aliases(backing: &Backing<'_>, progress: &mut ImportProgress) -> Result
         };
         let parent = entry.key.parent.ok_or_else(malformed)?;
         if directory.as_ref().is_none_or(|(held, _)| *held != parent) {
-            let path = OsString::from_vec(backing.directory_path(parent)?);
+            let path = crate::import::backing::os_from_vec(backing.directory_path(parent)?);
             directory = Some((parent, PathBuf::from(path)));
         }
         if first.is_none_or(|(held, _)| held != canonical) {
@@ -181,7 +181,7 @@ fn check_aliases(backing: &Backing<'_>, progress: &mut ImportProgress) -> Result
         let (Some((_, directory)), Some((_, stamp))) = (&directory, &first) else {
             return Err(malformed());
         };
-        let path = directory.join(OsStr::from_bytes(&entry.key.name));
+        let path = directory.join(crate::import::backing::os_from_vec(entry.key.name.clone()));
         if !stamp.matches_file(&fs::symlink_metadata(&path)?) {
             return Err(Failure::refused(SourceRefusal::Changed, path));
         }

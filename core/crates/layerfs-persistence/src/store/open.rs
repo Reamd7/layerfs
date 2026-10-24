@@ -18,7 +18,7 @@ impl Handles {
         history: &HistoryCatalogConfig,
     ) -> Result<Self, PersistenceError> {
         if config.backend != BackendSelection::Sqlite
-            || !cfg!(any(target_os = "macos", target_os = "linux"))
+            || !cfg!(any(target_os = "macos", target_os = "linux", target_os = "windows"))
         {
             return Err(PersistenceError::BackendUnavailable);
         }
@@ -70,7 +70,7 @@ impl Handles {
         writable: bool,
     ) -> Result<Self, PersistenceError> {
         if config.backend != BackendSelection::Sqlite
-            || !cfg!(any(target_os = "macos", target_os = "linux"))
+            || !cfg!(any(target_os = "macos", target_os = "linux", target_os = "windows"))
         {
             return Err(PersistenceError::BackendUnavailable);
         }

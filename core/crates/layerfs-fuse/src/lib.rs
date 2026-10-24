@@ -15,6 +15,8 @@ pub mod mount;
 pub mod request;
 #[cfg(target_os = "linux")]
 pub mod session;
+#[cfg(windows)]
+pub mod winfsp;
 
 pub use dispatch::{
     DispatchError, FailureView, InputFailure, MountRequests, MountWork, Received,

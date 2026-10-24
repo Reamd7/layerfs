@@ -21,6 +21,7 @@ use std::sync::Arc;
 /// The daemon's user inside its Sandbox (the runtime's `User` is `0:0`). A
 /// daemon opens only a Store file and directory it owns, so an installer
 /// must run as this user too.
+#[cfg(unix)]
 const DAEMON_UID: u32 = 0;
 
 /// The destination and its exclusive temporary name.
@@ -162,11 +163,19 @@ pub fn install_local(
         installer_user()?;
         let text = |error: io::Error| error.to_string();
         if !directory.exists() {
-            use std::os::unix::fs::DirBuilderExt;
-            fs::DirBuilder::new()
-                .mode(0o700)
-                .create(directory)
-                .map_err(text)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                fs::DirBuilder::new()
+                    .mode(0o700)
+                    .create(directory)
+                    .map_err(text)?;
+            }
+            // Windows: the Store directory is created non-recursively under the
+            // installing user's tree; owner-only scoping comes from NTFS ACL
+            // inheritance instead of a 0o700 mode bit.
+            #[cfg(not(unix))]
+            fs::create_dir(directory).map_err(text)?;
         }
         let (target, temporary) = paths(destination).map_err(text)?;
         let mut file = claim(&target, &temporary).map_err(text)?;
@@ -203,6 +212,7 @@ pub fn install_local(
 }
 
 /// Refuses an installer that is not the daemons' user.
+#[cfg(unix)]
 fn installer_user() -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
     // the owner of /proc/self is this process's effective user
@@ -215,5 +225,12 @@ fn installer_user() -> Result<(), String> {
              daemons' user, which opens only a Store it owns"
         ));
     }
+    Ok(())
+}
+
+/// Windows has no portable uid; the daemons'-user invariant is carried by the
+/// caller's install context and the Store directory's ACLs instead.
+#[cfg(not(unix))]
+fn installer_user() -> Result<(), String> {
     Ok(())
 }

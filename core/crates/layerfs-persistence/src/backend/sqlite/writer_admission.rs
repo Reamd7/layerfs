@@ -54,7 +54,14 @@ impl Writer {
             let _ = path;
             Ok(Self {})
         }
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[cfg(target_os = "windows")]
+        {
+            // No flock on Windows: SQLite's own locking guards the sole
+            // writer, as on Darwin.
+            let _ = path;
+            Ok(Self {})
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         {
             let _ = path;
             Err(BackendError::Integrity)
