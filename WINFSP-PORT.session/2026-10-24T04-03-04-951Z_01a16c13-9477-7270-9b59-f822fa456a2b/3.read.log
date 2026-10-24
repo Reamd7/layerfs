@@ -1,0 +1,354 @@
+URL: https://github.com/binpash/trai
+Content-Type: text/markdown
+Method: github-repo
+Notes: Fetched via GitHub API
+
+---
+
+# binpash/trai
+
+A Claude Code plugin for sandboxing tool calls
+
+Stars: 6 · Forks: 0 · Issues: 0
+Language: Shell
+License: MIT License
+
+---
+
+## Files
+
+```
+[dir] .claude-plugin
+      .claude-plugin/marketplace.json
+      .claude-plugin/plugin.json
+      .gitmodules
+      CLAUDE.md
+      LICENSE
+      README.md
+      claude-trai-guide.md
+[dir] commands
+      commands/commit.md
+      commands/diff.md
+      commands/discard.md
+      commands/doctor.md
+      commands/explore.md
+      commands/passthrough.md
+      commands/status.md
+[dir] config
+      config/defaults.json
+[dir] docs
+[dir] docs/claude
+      docs/claude/design-notes.md
+      docs/claude/research-claude-code.md
+      docs/claude/research-review-ux.md
+      docs/claude/research-try.md
+      docs/limitations.md
+      docs/use-cases.md
+[dir] hooks
+      hooks/hooks.json
+      hooks/pre-bash.sh
+      hooks/session-end.sh
+      hooks/session-start.sh
+[dir] scripts
+      scripts/cmd-commit.sh
+      scripts/cmd-diff.sh
+      scripts/cmd-discard.sh
+      scripts/cmd-explore.sh
+      scripts/cmd-passthrough.sh
+      scripts/cmd-status.sh
+      scripts/common.sh
+      scripts/doctor.sh
+      scripts/filter-ignored.sh
+      scripts/is-passthrough.sh
+[dir] test
+      test/smoke.sh
+[dir] vendor
+[dir] vendor/try
+[dir] vendor/try/.github
+[dir] vendor/try/.github/workflows
+      vendor/try/.github/workflows/test.yaml
+      vendor/try/.github/workflows/vagrant.yaml
+      vendor/try/.gitignore
+      vendor/try/LICENSE
+      vendor/try/Makefile.in
+      vendor/try/README.md
+      vendor/try/STYLE.md
+      vendor/try/Vagrantfile
+[dir] vendor/try/completions
+      vendor/try/completions/README.md
+      vendor/try/completions/try.bash
+      vendor/try/config.guess
+      vendor/try/config.sub
+      vendor/try/configure.ac
+[dir] vendor/try/docs
+      vendor/try/docs/try.1.md
+      vendor/try/docs/try_logo.png
+      vendor/try/docs/try_pip_install_example.gif
+      vendor/try/install-sh
+[dir] vendor/try/man
+      vendor/try/man/.gitignore
+      vendor/try/package.nix
+[dir] vendor/try/scripts
+      vendor/try/scripts/README.md
+      vendor/try/scripts/check_trycase.sh
+      vendor/try/scripts/check_version.sh
+      vendor/try/scripts/lint.sh
+      vendor/try/scripts/run_tests.sh
+      vendor/try/shell.nix
+[dir] vendor/try/test
+      vendor/try/test/README.md
+      vendor/try/test/all-commit-cases.sh
+      vendor/try/test/check_env.sh
+      vendor/try/test/check_shell.sh
+      vendor/try/test/command_substitution.sh
+      vendor/try/test/dev_urandom.sh
+      vendor/try/test/empty_summary.sh
+      vendor/try/test/exit_status.sh
+      vendor/try/test/explore.sh
+      vendor/try/test/fail.sh.skip
+      vendor/try/test/hidden_variables.sh
+      vendor/try/test/ignore_flag.sh
+      vendor/try/test/merge_multiple_dirs.sh
+      vendor/try/test/missing_unionfs_mergerfs.sh
+      vendor/try/test/mkdir_on_file.sh
+      vendor/try/test/network.sh
+      vendor/try/test/newline-filename.sh
+      vendor/try/test/nonexistent_sandbox.sh
+      vendor/try/test/pipeline.sh
+      vendor/try/test/process_substitution.sh
+      vendor/try/test/process_substitution_D_flag.sh
+[dir] vendor/try/test/resources
+[…24 files elided…]
+```
+
+## README
+
+# trai
+
+A Claude Code plugin that sandboxes **Bash tool calls** through
+[binpash/try](https://github.com/binpash/try) so the filesystem side-effects of
+shell commands stay in an overlay until you review them. At session end (or when you are ready to commit), run
+`/trai:diff` to see the accumulated changes and `/trai:commit` or `/trai:discard`
+to apply or throw them away.
+
+**Linux only.** Requires kernel ≥ 5.11 and unprivileged user namespaces.
+
+---
+
+## Example
+
+> **You:** Set up a Python virtualenv and install `requests` and `pytest`.
+
+Claude runs `python3 -m venv .venv` and `pip install requests pytest` — but
+nothing has touched your real filesystem yet. The writes are held in an overlay.
+
+> **You:** `/trai:diff`
+
+```
+.venv/bin/activate (added)
+.venv/lib/python3.11/site-packages/requests/ (created dir)
+.venv/lib/python3.11/site-packages/pytest/ (created dir)
+… 40 more files
+```
+
+> **You:** Looks good. `/trai:commit`
+
+Now the virtualenv is on disk. If the install had gone wrong, `/trai:discard --yes`
+would have left your project completely untouched.
+
+---
+
+## What trai does **not** do
+
+- **Does not sandbox `Edit` / `Write` / `MultiEdit` tool calls.** Those write
+  directly through Claude's Node process; our Bash hook can't intercept them.
+  Use git to review and revert direct code edits.
+- **Not a security sandbox.** Network is unrestricted; a compromised agent can
+  exfiltrate before you see any diff. For security isolation use Claude Code's
+  built-in bubblewrap/Seatbelt sandbox in addition.
+- **Does not wrap `sudo`, `docker`, `podman`.** They fail opaquely inside an
+  unprivileged user namespace and are explicitly passthrough.
+- **Not tested with concurrent Claude sessions.** One overlay is shared across
+  all Bash calls; running multiple Claude sessions simultaneously against it is
+  not tested. The expected usage is a single Claude agent per session.
+
+Full list: [`docs/limitations.md`](docs/limitations.md).
+
+---
+
+## Install
+
+### Prerequisites
+
+- Linux kernel ≥ 5.11, unprivileged user namespaces enabled.
+- `bash`, `jq`, `flock`, `unshare` (util-linux).
+- `try` (either on `$PATH` or as the vendored submodule; see below).
+
+On Debian/Ubuntu:
+
+```sh
+sudo apt install -y util-linux attr jq bsdextrautils
+```
+
+### Install the plugin
+
+```sh
+# In a running Claude Code session:
+/plugin marketplace add https://github.com/binpash/trai
+/plugin install trai
+/trai:doctor
+```
+
+If `/trai:doctor` reports that `try` is missing, install it:
+
+```sh
+git clone https://github.com/binpash/try.git /tmp/try
+cd /tmp/try && autoconf && ./configure && make && sudo make install
+```
+
+Or use the vendored copy: this repo includes `vendor/try` as a submodule. If
+you install the plugin from a git clone (not the marketplace), run:
+
+```sh
+cd <your clone> && git submodule update --init vendor/try
+```
+
+`scripts/doctor.sh` falls back to `vendor/try/try` if no system `try` is on
+`$PATH`.
+
+---
+
+## Usage
+
+Once installed, there is nothing to do — the plugin activates on every Claude
+Code session and sandboxes your Bash calls transparently. 
+
+> **Tip for best results:** before starting a work session, feed Claude the
+> [`claude-trai-guide.md`](claude-trai-guide.md) file from this repo. It
+> gives Claude the context it needs to correctly interpret `/trai:diff` output,
+> understand what is and isn't sandboxed, and avoid common gotchas:
+>
+> ```
+> /read claude-trai-guide.md
+> ```
+
+Trai supports these commands:
+
+| Slash command            | What it does                                                          |
+|--------------------------|-----------------------------------------------------------------------|
+| `/trai:status`            | Overlay path, size, number of changed files.                          |
+| `/trai:diff`              | Filtered list of files added / modified / deleted in the overlay.     |
+| `/trai:commit`            | Apply the overlay to the real FS. **Destructive.** Run diff first.    |
+| `/trai:discard --yes`     | Remove the overlay. Requires explicit `--yes`.                         |
+| `/trai:explore`           | Print the shell command to open an interactive shell inside overlay.  |
+| `/trai:doctor`            | Run preflight; print remediation for any failing check.               |
+| `/trai:passthrough`       | One-shot bypass: next Bash command runs outside `try`.                 |
+
+A typical session:
+
+```
+/trai:status
+...work with Claude: installs, builds, migrations...
+/trai:diff
+/trai:commit
+```
+
+Or, if things went sideways:
+
+```
+/trai:discard --yes
+```
+
+---
+
+## How it works
+
+- Registers a `PreToolUse(Bash)` hook that rewrites every Bash command Claude
+  issues from `npm install` to `try -D <overlay> 'npm install'`.
+- Every command in the session shares one overlay dir under
+  `$XDG_STATE_HOME/trai/sessions/<id>/` so sequential commands see each
+  other's state coherently (call 2 sees files call 1 created).
+- Read-only and git-related commands (see `config/defaults.json`) pass through
+  unwrapped.
+- At end of session, `/trai:diff` shows the accumulated diff and `/trai:commit`
+  applies it to the real filesystem.
+
+---
+
+## Configuration
+
+User overrides live at `${CLAUDE_PLUGIN_DATA}/config.json`. The shape matches
+[`config/defaults.json`](config/defaults.json). Common overrides:
+
+```json
+{
+  "passthrough": ["git *", "ls *", "my-internal-tool *"],
+  "warnOnPassthrough": false
+}
+```
+
+Providing an array replaces the default for that key entirely (not element-wise).
+
+---
+
+## Repository layout
+
+```
+.claude-plugin/   plugin + marketplace manifests
+hooks/            session-start, pre-bash rewriter, session-end
+scripts/          doctor, passthrough matcher, filter, slash-command backers
+commands/         slash-command definitions
+config/           default passthrough + ignore lists
+docs/             user-facing docs: limitations, use cases
+docs/claude/      internal research notes and design rationale
+test/             end-to-end smoke test
+vendor/try/       binpash/try as a pinned submodule (fallback binary)
+```
+
+User-facing docs:
+
+- [`docs/limitations.md`](docs/limitations.md) — full known-issue list with workarounds.
+- [`docs/use-cases.md`](docs/use-cases.md) — concrete examples of trai behavior.
+
+Internal / contributor docs (design rationale, research notes):
+
+- [`docs/claude/research-try.md`](docs/claude/research-try.md) — how `try` works, its limits.
+- [`docs/claude/research-claude-code.md`](docs/claude/research-claude-code.md) — Claude Code hooks, plugins, marketplaces.
+- [`docs/claude/research-review-ux.md`](docs/claude/research-review-ux.md) — post-hoc review design landscape.
+- [`docs/claude/design-notes.md`](docs/claude/design-notes.md) — the locked-in decisions and why.
+
+The implementation plan approved during design lives at
+`/scratch/<user>/.claude/plans/the-goal-of-this-hashed-flask.md` on the
+development host.
+
+---
+
+## Testing
+
+```sh
+./test/smoke.sh
+```
+
+Runs eleven end-to-end checks against the hook pipeline in an isolated temp
+directory. Does NOT run inside the repo cwd (the test commits and discards
+overlays, which would interfere with work in progress).
+
+---
+
+## Loud warnings
+
+1. **Edit / Write / MultiEdit are NOT sandboxed.** Use git.
+2. **Not a security sandbox.** Network traffic is unrestricted.
+3. **`/trai:commit` is destructive.** Run `/trai:diff` first.
+4. **Long-running daemons** (`npm run dev &`) shouldn't be wrapped; add them to
+   the passthrough list.
+5. **`try` is prototype-quality.** There are edge case issues; expect quirks on exotic filesystems (NFS `$HOME`, btrfs subvolumes,
+   Docker-in-Docker). Run `/trai:doctor` if things misbehave.
+
+## License
+
+MIT. See [`LICENSE`](LICENSE).
+
+## Acknowledgments
+
+The first version of this plugin was implemented by [Guy Van den Broeck](https://web.cs.ucla.edu/~guyvdb/) after a discussion over lunch.

@@ -1,0 +1,331 @@
+URL: https://layerfs.ai/docs/integrations/dsh/
+Content-Type: text/html
+Method: native
+
+---
+
+---
+canonical: https://layerfs.ai/docs/integrations/dsh/
+meta-description: "The dsh-layerfs plugin bundle: agents in a DeepSeek Harness session work on a LayerFS project from bash, and a LayerFS tab draws what each did."
+meta-og:description: "The dsh-layerfs plugin bundle: agents in a DeepSeek Harness session work on a LayerFS project from bash, and a LayerFS tab draws what each did."
+meta-og:image: https://layerfs.ai/github-preview.png
+meta-og:image:alt: "LayerFS: Ephemeral Workspaces. Durable Shared History."
+meta-og:image:height: "640"
+meta-og:image:width: "1280"
+meta-og:site_name: LayerFS
+meta-og:title: LayerFS × DSH · LayerFS docs
+meta-og:type: website
+meta-og:url: https://layerfs.ai/docs/integrations/dsh/
+meta-twitter:card: summary_large_image
+meta-twitter:description: "The dsh-layerfs plugin bundle: agents in a DeepSeek Harness session work on a LayerFS project from bash, and a LayerFS tab draws what each did."
+meta-twitter:image: https://layerfs.ai/github-preview.png
+meta-twitter:title: LayerFS × DSH · LayerFS docs
+meta-viewport: width=device-width, initial-scale=1
+title: LayerFS × DSH · LayerFS docs
+---
+
+[LayerFS](/)[v1.1.0 →releases](https://github.com/Ephemeral-AI-Lab/layerfs/releases/tag/v1.1.0 "Releases")[](https://github.com/Ephemeral-AI-Lab/layerfs)
+
+**Docs menu**
+
+Integrations
+
+# LayerFS × DSH
+
+LayerFS×and![](/integrations/dsh.svg)DSH
+
+`dsh-layerfs` is a plugin bundle for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh). Agents in a dsh session work on a LayerFS project from bash, through short Node scripts that use the JavaScript SDK: they fork Branches, test them in Sandboxes, and merge and publish. You watch every agent's Branch grow, live. It changes no dsh code.
+
+previewLayerFS JS SDK 1.0.0 · dsh webdesign: issue #346
+
+![](/agents/crab.png)![](/agents/jelly.png)![](/agents/ghost.png)![](/agents/frog.png)
+
+[video](/integrations/dsh-layerfs.mp4)
+
+*A recorded run: a lead and five agents build one application on Branches of their own. Work shows their terminals; History grows as they commit, merge and publish.*
+
+## Install
+
+The quickest way is to let a coding agent do it. Paste this into one running on the machine where dsh web will run, in a folder holding a clone of the [dsh-layerfs repository](https://github.com/Ephemeral-AI-Lab/dsh-layerfs):
+
+![](/agents/cloud.png)Install prompt for your agent Copy prompt
+
+```
+Install LayerFS × DSH 0.1.0 for me: the dsh-layerfs plugin in DeepSeek Harness (dsh) web, on real LayerFS v1.1.0, then run its scenario tests in dsh web on the default profile at http://127.0.0.1:3080 and tell me the results.
+
+This machine is macOS, Linux or Windows: find out which, follow the steps for it and skip the others. This is an install-and-test run: change no code in any checkout. When something fails, find the cause from the source and bounded output, tell me with a proposed fix, and go on where you can.
+
+Rules:
+- Pin exactly: https://github.com/Ephemeral-AI-Lab/dsh-layerfs at commit baac1b92b97f0bd492002c285f6a13401b4f4c0b, and https://github.com/Ephemeral-AI-Lab/layerfs at commit 9f97a7ec95b662e9cb288704afa165feff132cfa. The plugin's layerfs.json names the same LayerFS commit. Read AGENTS.md in both checkouts first.
+- Give every test command a wall timeout of at most 120 s, and keep every other command under 2 minutes: put timeout 110 before long steps (macOS has no timeout; use perl -e 'alarm 110; exec @ARGV' <command>) and run a long build again until it finishes, since Cargo keeps what it compiled.
+- One attempt per check: no retry loops, and no reruns to turn a failure into a pass.
+- Stores live on a local Linux filesystem (ext4, xfs or btrfs). On Windows never put a Store or the Linux LayerFS home on /mnt/c or any Windows-backed mount.
+- Use dsh's default web profile: no DSH_HOME override. Before changing it, copy its cordis.patch.yml and package.json to a dated backup folder, and keep its existing patch entries. Never restart a dsh web that has a run in progress.
+- Do not commit, push, delete other volumes or containers, or install system-wide software without asking me.
+
+Install:
+1. Prerequisites; record each version. All: Node 22.19 or newer, pnpm, python3, Docker, network access, and a built deepseek-harness checkout (https://github.com/deepseek-ai/deepseek-harness) beside the plugin, with a dsh version inside the plugin's packages/dsh-layerfs/package.json engines.dsh; if there is none, clone it there and run pnpm install && pnpm run build in it. macOS: Docker Desktop running. Linux: a Docker Engine, /dev/fuse, and a Store filesystem that is ext4, xfs or btrfs. Windows: WSL2 with a selected distribution (default Ubuntu) that has /dev/fuse, its own running Docker Engine (not Docker Desktop's Windows pipe), and Node 22.19 or newer at an absolute path. Keep at least 20 GiB free inside that Docker Engine. If something is missing that you cannot install, stop and tell me which.
+2. LayerFS checkouts at 9f97a7ec95b662e9cb288704afa165feff132cfa: one on macOS or Linux; on Windows two of the same commit, one in WSL for the sealed bundle and one on Windows for the dsh Host (record core.autocrlf: the worker refuses a Windows SDK that differs from the bundle's, apart from line endings). In the checkout the Host uses, run npm install in api and npm --prefix api/agent/cli install; they only link packages.
+3. Runtime image: build it from the plugin's tools/runtime/Dockerfile in the Docker Engine the worker and Sandboxes use (on Windows, the WSL one), and record its sha256 image ID. Check it has cargo (docker run --rm <image> cargo --version): the Depot scenario needs it.
+4. LayerFS build. macOS and Windows: build the sealed Linux bundle with the LayerFS checkout's tools/worktree.py (register, prepare, build --platform linux --profile release; see docs/general/parallel-worktrees.md), on Windows inside WSL; record the printed build-linux-… folder and its manifest.json hash, and confirm it holds api/runtime/src/worker/server.js, layerfs-daemon and layerfs.node. Linux: build layerfs-daemon and the addon (the plugin README's step 1 recipe, or npm --prefix api run build:native), and record the daemon path and the layerfs.node dsh web will load.
+5. Plugin: in the dsh-layerfs checkout, with LAYERFS_SOURCE set to the Host's LayerFS checkout, run pnpm install, then pnpm run link:layerfs, then pnpm run build with DSH_SOURCE set to the deepseek-harness checkout (absolute paths). pnpm run check:layerfs must report the checkout "at the pinned commit".
+6. Plugin tests, each bounded at 120 s: pnpm test and pnpm run test:scenarios; on Windows also pnpm run test:windows.
+7. Profile: add the plugin to the default web profile as the plugin README's steps 3 and 4 describe, but without the DSH_HOME override. Its layerfs-host entry in cordis.patch.yml takes: image (your sha256, on Windows from the WSL Engine); bundle (macOS: the sealed bundle; Windows: its WSL path); wslDistribution (Windows only); daemon (Linux, required; elsewhere it defaults to the bundle's layerfs-daemon); volumes (Linux: Docker's volumes directory, which dsh web's user must be able to write). Keep containerPrefix at its default unless something else in that Docker Engine already uses layerfs- containers. On Linux, run dsh web as a user that can write Docker's volumes directory (such as root), with a home that user owns, or Init fails Unsupported.
+8. Start dsh web with the Node from step 1 (a login shell may pick an older one): pnpm --dir <deepseek-harness> dsh web --no-open --port 3080. GET /layerfs/status must report an empty missing list. Give me the printed http://127.0.0.1:3080/?token=… link.
+9. On the LayerFS page, open All projects: Docker must be green, with host and Docker free space shown. On macOS and Windows "Store calls · worker ready" must be green; if it is not, press its Start button once and tell me what happened.
+
+Run the scenario tests:
+10. Open the LayerFS page's Tests tab. It runs the LayerFS scripted model, which ships switched on: scripted agent runs through the real dsh agent loop, with no language model or API key. Press Run all once; it runs every scenario, up to 2 at once, five through the SDK and five through the layerfs command. Most take under a minute, Depot and Crew several minutes each; the whole run takes about 15 to 20 minutes. Don't press Run again while it is going.
+11. When every row has finished, tell me each scenario's result and time, and for a failure the reason its row shows. Check a failed run's session with node tools/checks/run.mjs <profile dir> <root session id> in the dsh-layerfs checkout, bounded at 120 s, and leave its project as it is.
+
+Report every step with its command and outcome (PASS, FAIL, or NOT_RUN with the reason), the versions, the image ID, the bundle folder or daemon path, and the Tests tab table. If a step fails, stop and give me the exact error unless a rule above says to go on; don't retry it on your own.
+```
+
+It follows the six steps below and asks before anything it cannot do. Expect a few minutes for the first LayerFS build.
+
+**▶Install step by stepsix steps, without an agent**
+
+You need Node 22.19 or newer and pnpm; a built [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) checkout (its own README: `pnpm install && pnpm run build`); Docker (Docker Desktop on macOS); and network access for step 1. Below, `$DSH_LAYERFS` is the dsh-layerfs clone's absolute path, `$LAYERFS_SOURCE` a[LayerFS](https://github.com/Ephemeral-AI-Lab/layerfs) checkout at the commit in its `layerfs.json`, and `$DSH` the deepseek-harness checkout's. The full guide, with every setting, is the [dsh-layerfs README](https://github.com/Ephemeral-AI-Lab/dsh-layerfs#readme).
+
+### 1. Install LayerFS
+
+Nothing is published yet, so build a Linux `layerfs-daemon` and the SDK's native addon in the Rust 1.85.1 image, from the repository root. A cold release build takes a few minutes; if it stops, run it again and Cargo keeps what it compiled.
+
+```
+cd "$LAYERFS_SOURCE"
+docker pull rust:1.85.1-bookworm
+docker volume create layerfs-cargo && docker volume create layerfs-target
+mkdir -p core/target/cluster2-linux
+docker run --rm -v "$LAYERFS_SOURCE":/work:ro -v layerfs-cargo:/usr/local/cargo/registry -w /work \
+  rust:1.85.1-bookworm cargo fetch --manifest-path core/Cargo.toml --locked
+docker run --rm -v "$LAYERFS_SOURCE":/work:ro -v layerfs-target:/work/core/target/cluster2-linux \
+  -v layerfs-cargo:/usr/local/cargo/registry:ro -e CARGO_TARGET_DIR=/work/core/target/cluster2-linux -w /work \
+  rust:1.85.1-bookworm cargo build --manifest-path core/Cargo.toml --offline --locked --release -j 6 \
+  -p layerfs-node --lib -p layerfs-daemon --bins
+```
+
+Gather the build into one folder, the bundle (any folder Docker Desktop shares):
+
+```
+BUNDLE=$HOME/layerfs-linux-build
+mkdir -p "$BUNDLE/api/agent"
+docker run --rm -v layerfs-target:/t:ro -v "$BUNDLE":/out rust:1.85.1-bookworm sh -c \
+  "cp /t/release/layerfs-daemon /out/ && cp /t/release/liblayerfs_node.so /out/layerfs.node && chown $(id -u):$(id -g) /out/layerfs-daemon /out/layerfs.node"
+cp -R api/package.json api/backend api/runtime "$BUNDLE/api/"
+cp -R api/agent/sdk "$BUNDLE/api/agent/"
+```
+
+That folder serves Linux. **macOS and Windows need a sealed bundle**: the worker checks every file against the folder's `manifest.json` before it listens, and only LayerFS's `tools/worktree.py build` writes one. The guide has its three commands.
+
+Then build the runtime image that Sandboxes and the macOS worker run, and note its ID:
+
+```
+docker build -t layerfs-352-runtime:node24 "$DSH_LAYERFS/tools/runtime"
+docker image inspect --format '{{.Id}}' layerfs-352-runtime:node24     # the image setting
+```
+
+Agents' Bash calls use the [`layerfs` command](/docs/sdk/agent/#layerfs), the checkout's`api/agent/cli/` folder. Link it and the packages once; neither command downloads anything:
+
+```
+npm --prefix "$LAYERFS_SOURCE/api" install              # links the three packages to each other
+npm --prefix "$LAYERFS_SOURCE/api/agent/cli" install    # links the layerfs command to @layerfs/agent
+```
+
+### 2. Build the dsh bundle
+
+```
+cd "$DSH_LAYERFS"
+LAYERFS_SOURCE="$LAYERFS_SOURCE" pnpm install
+DSH_SOURCE="$DSH" pnpm run build
+```
+
+### 3. Make a profile
+
+Use a `DSH_HOME` of your own, so your usual `~/.dsh` is not touched. dsh's`plugin` command makes the `web` profile and adds the bundle to it:
+
+```
+export DSH_HOME=$HOME/dsh-layerfs        # any empty folder
+pnpm --dir "$DSH" dsh plugin --profile web add "link:$DSH_LAYERFS/packages/dsh-layerfs"
+```
+
+Install `dsh-layerfs` only; the demo bundle is not part of the release.
+
+### 4. Configure Live
+
+dsh writes the profile's `cordis.patch.yml` as `[]`; replace it with the Host's settings. The image is required everywhere, the bundle on macOS and the daemon on Linux:
+
+```
+# $DSH_HOME/profiles/web/cordis.patch.yml
+- id: layerfs-host
+  config:
+    image: "sha256:<64 hex>"                   # the runtime image ID
+    bundle: /Users/<you>/layerfs-linux-build    # macOS: the bundle folder
+    # daemon: /path/to/layerfs-daemon           # Linux
+```
+
+Keep the Host's `home` and `traceDir` in the OS temp area (the default): bash calls in Workspace Write mode may only write there. Until the required settings are in, Init is refused with "LayerFS is not configured", and `GET /layerfs/status` lists what is missing.
+
+### 5. Start dsh web
+
+```
+DSH_HOME=$HOME/dsh-layerfs pnpm --dir "$DSH" dsh web --no-open --port 3090
+```
+
+Open the printed `http://127.0.0.1:3090/?token=…` link.
+
+### 6. Check
+
+```
+cd "$DSH_LAYERFS" && pnpm test
+```
+
+It runs the Host, simulator, model, playback and history tests.
+
+## Two real runs
+
+On 2026-10-20, one dsh main agent and seven worker subagents on `deepseek-flash` took an empty LayerFS project to a published, verified `main`, twice: a small app in under an hour and a hard one in an afternoon. Every change went through the SDK as Branches, Commits, merges and publishes.
+
+![Wayfare's History at the end of the run: main at L12 after 147 Commits, with each lane's Branches forking and merging around it](/integrations/runs/wayfare-history.webp)
+
+### Wayfare
+
+A collaborative trip planner in Node 24, with no third-party dependencies.
+
+Time
+
+56 min, 8 agents
+
+History
+
+147 Commits, 31 Branches, 13 Layers
+
+Checks
+
+334/334 tests, A01–A12 pass
+
+Store
+
+1.21 MB on disk for 91.5 MB of snapshots, 27× dedupe
+
+[Full record →](https://github.com/Ephemeral-AI-Lab/dsh-layerfs/tree/main/demo/wayfare)
+
+![Quarry's storage at the end of the run: 8.90 GB on disk for 4.93 TB of history, 913 Commits on 56 Branches](/integrations/runs/quarry-store.webp)
+
+### Quarry
+
+A SQL database in Rust, checked row by row against SQLite, with every build's target/ committed.
+
+Time
+
+4 h 16 min, 8 agents
+
+History
+
+913 Commits, 56 Branches, 9 Layers
+
+Checks
+
+891 tests, 800/800 sqllogictest, Q01–Q12 pass
+
+Store
+
+8.90 GB on disk for 4.93 TB of snapshots, 166× dedupe: less than one copy of main (13.5 GB)
+
+[Full record →](https://github.com/Ephemeral-AI-Lab/dsh-layerfs/tree/main/demo/quarry)
+
+Screenshots from the end of each run, taken with an earlier version of the tab, before it split into Work and History.
+
+## Your first session
+
+### 1. Start a session on a project
+
+In dsh web, start a new session. Its row has the preset chip, which reads **LayerFS × DSH minimalist**, and beside it the **project chip**. Open the project chip and pick **New empty project**, or **Import project…** to choose a folder and import it as a new project; a card under the chip shows the import's progress. The session's project is fixed at its first bash call that uses it.
+
+### 2. Switch to Workspace Write
+
+Set the session's mode to **Workspace Write**. Bash calls then run in dsh's sandbox, which lets LayerFS write its home and traces; subagents inherit the mode.
+
+### 3. Give it a task
+
+The preset already knows the SDK and its rules, so ask for work as you would any agent. Work that splits across subagents shows the most. For example:
+
+![](/agents/cloud.png)A first task Copy prompt
+
+```
+Build a small two-page website in this project: a home page and an about page that link to each other, plus a check script (node check.mjs) that fails if either page is missing or a link is broken.
+
+Give each page to its own subagent, each on its own Branch forked from main. Each subagent runs node check.mjs in a Workspace before it commits. When both are done, merge their Branches into one, fix any Conflict, run the check once more, and publish to main.
+```
+
+### 4. Watch the Work tab
+
+**Work** sits beside Chat and Trajectory. Its chips are `main` and the Branches. On `main`you see the Store's size and the project terminal, which prints every Branch call (fork, merge, publish) with the agent that made it. A Branch's chip shows its `fs` terminal, the Store reads and writes on that Branch, and one pane per Workspace mounted on it, with the commands run there. Calls appear in step with the run, and **Follow**keeps up with the newest. Click a picture to enlarge it.
+
+![The Work tab on main: storage, 7.51 MB on disk for 2.57 GB of history, the Branches list, and the project terminal with forks, merges and publishes](/integrations/dsh-tutorial-work.webp)
+
+*main: the Store's size and the project terminal.*
+
+![The Work tab on a Branch: the fs terminal with one Commit per apply, and two agents' Workspace panes, one mounted and one unmounted](/integrations/dsh-tutorial-branch.webp)
+
+*A Branch: its fs terminal and each agent's Workspace.*
+
+### 5. Watch History grow
+
+**History** draws every Branch and Commit, which agent made it, and the Layers on `main`, one per publish. It grows as the agents work; **Play** replays it from the start. **File** shows the files at any point and **Storage** what the Store holds.
+
+![The History tab: main with Layers L6 to L10, and agents' Branches forking, committing and merging around it](/integrations/dsh-tutorial-history.webp)
+
+*History: 110 Commits on a dozen Branches, main at L10.*
+
+### 6. Come back to it later
+
+The sidebar's **LayerFS** page has one tab per project: where `main` is and what was published last, History and Files side by side (click a History node to see the files at that point), **New LayerFS session** to start another session on the project, and **Remove project…**, which asks for the project's name first.
+
+## What it adds
+
+### Minimalist preset
+
+"LayerFS × DSH minimalist": bash with background jobs, subagents and compaction, and no read, write or edit tools. Its persona carries an SDK cheat-sheet and the working rules: one Workspace per agent, only the main agent publishes, unmount every Workspace.
+
+### Project chip
+
+Beside the preset chip when you start a session: pick a project, start an empty one, or import a folder as a new project, with the import's progress under the chip.
+
+### Work and History tabs
+
+Beside Chat and Trajectory: the agents' terminals, Branches and Sandboxes, played in step with the run, subagents included; and the project's History, Files and Storage.
+
+### LayerFS page
+
+In the sidebar, one tab per project: History and Files side by side, a new session on the project, and Remove.
+
+## How it works
+
+1. dsh sessionagents, subagents, bash→
+2. layerfs-hostbash environment, records→
+3. LayerFS JS SDKshort Node scripts→
+4. Store and SandboxesLinux; on macOS in Docker
+
+A bash call in a session bound to a project gets the project, the SDK and a trace file per agent, in the plugin's own `DSH_LAYERFS_*` names: dsh lets a plugin set only `DSH_*` names, and LayerFS reads only`LAYERFS_*`, so the plugin's wrappers set each unset `LAYERFS_<NAME>` from its`DSH_LAYERFS_<NAME>` before loading LayerFS. Each finished SDK call becomes a `plugin:layerfs/call` record in the calling agent's own session, and the client plugin reads those records back to draw the tabs. Subagents are named by the label their parent gave them.
+
+On Linux, the Host and the agents' scripts open the Store in their own process. On macOS the Mac runs no Store call itself: `@layerfs/runtime` runs one long-lived Linux container per LayerFS home, `layerfs-worker`, and every Store call of the Host and of agents' scripts runs there; agents get its endpoint as`DSH_LAYERFS_WORKER_ENDPOINT`. On Windows the worker runs in a WSL2 distribution. Agents start the project's numbered Sandboxes with `sandbox.create` and mount up to 16 Workspaces in each, naming the Sandbox; each Sandbox closes itself two minutes after its last Workspace is unmounted.
+
+## Reference
+
+| Name                                     | What it holds                                                                                                                                                                                            |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DSH_LAYERFS_PROJECT`                    | The project the session is bound to, with the deployment settings.                                                                                                                                       |
+| `DSH_LAYERFS_SDK`, `DSH_LAYERFS_BACKEND` | File URLs of the plugin's wrappers of `@layerfs/agent` and `@layerfs/backend`. Each wrapper first maps the plugin's `DSH_LAYERFS_*` names to LayerFS's own `LAYERFS_*` (keeping any already set), then exposes LayerFS's entry unchanged; LayerFS itself reads no `DSH_` name. |
+| `DSH_LAYERFS_SKILL`, `DSH_LAYERFS_CLI`   | The SDK skill agents read first, and the plugin's wrapper of the [`layerfs` command](/docs/sdk/agent/#layerfs), the checkout's `api/agent/cli/src/layerfs.js`.                                           |
+| `DSH_LAYERFS_WORKER_ENDPOINT`            | macOS and Windows: the LayerFS home's worker, mapped to `LAYERFS_WORKER_ENDPOINT`.                                                                                                                       |
+| `DSH_LAYERFS_TRACE`                      | The agent's trace file; the bash call id is the trace step.                                                                                                                                              |
+| `/layerfs`                               | The Host's web route, behind dsh's own connection checks: status, projects, Init jobs, a session's or project's state, and Files reads.                                                                  |
+
+## Limits
+
+- Only dsh web is checked. dsh desktop serves the same web client but was not tested; the headless profile has no preset registry, so the preset is not offered there.
+- A session's project is fixed at its first bash call that uses it.
+- Sessions run in Workspace Write mode, and the Host's `home` and `traceDir` stay in the OS temp area: a mount anywhere else fails `PermissionDenied`.
+- Everything else follows [Platform and limits](/docs/platform/): Store calls need Linux and a local filesystem, which on macOS and Windows the LayerFS home's worker provides.
+
+CLOSE ✕

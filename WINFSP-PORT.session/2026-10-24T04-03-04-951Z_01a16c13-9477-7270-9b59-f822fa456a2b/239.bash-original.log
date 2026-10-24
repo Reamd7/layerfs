@@ -1,0 +1,160 @@
+acl.rs
+acl_tests.rs
+allow.rs
+app_package.rs
+app_package_tests.rs
+bin
+cap.rs
+conpty
+deny_read_acl.rs
+deny_read_resolver.rs
+deny_read_resolver_access_tests.rs
+deny_read_state.rs
+deny_read_state_tests.rs
+deny_read_walker.rs
+deny_read_walker_tests.rs
+desktop.rs
+desktop_tests.rs
+dpapi.rs
+elevated
+elevated_impl.rs
+env.rs
+environment_transport.rs
+environment_transport_tests.rs
+file_write.rs
+file_write_tests.rs
+framed_io.rs
+helper_materialization
+helper_materialization.rs
+hide_users.rs
+identity.rs
+identity_integration_tests.rs
+installation_record.rs
+launch_environment.rs
+launch_environment_tests.rs
+lib.rs
+logging.rs
+no_reparse_dir.rs
+no_reparse_dir_tests.rs
+package_identity.rs
+path_normalization.rs
+proc_thread_attr.rs
+process.rs
+provisioning_client
+provisioning_client.rs
+provisioning_client_tests.rs
+provisioning_protocol.rs
+resolved_permissions.rs
+runtime_ownership.rs
+runtime_ownership_tests.rs
+sandbox_utils.rs
+service_diagnostics.rs
+service_identity.rs
+service_identity_tests.rs
+setup.rs
+setup_acl_error.rs
+setup_acl_error_tests.rs
+setup_error.rs
+setup_launch.rs
+setup_launch_tests.rs
+setup_mutex.rs
+setup_provisioning
+setup_provisioning.rs
+setup_refresh_tests.rs
+spawn_prep.rs
+ssh_config_dependencies.rs
+stdio_bridge.rs
+stdio_bridge_tests.rs
+token.rs
+token_groups_tests.rs
+token_tests.rs
+token_user.rs
+token_user_tests.rs
+unified_exec
+uninstall_windows
+uninstall_windows.rs
+wfp
+wfp.rs
+wfp_setup.rs
+winutil.rs
+workspace_acl.rs
+wrapper.rs
+wrapper_tests.rs
+   489 windows-sandbox-rs/src/wrapper.rs
+   195 windows-sandbox-rs/src/wrapper_tests.rs
+ 21604 total
+// Rust 2024 surfaces this lint across the crate; keep the edition bump separate
+// from the eventual unsafe cleanup.
+#![allow(unsafe_op_in_unsafe_fn)]
+
+#[cfg(any(target_os = "windows", test))]
+mod ssh_config_dependencies;
+
+#[doc(hidden)]
+pub mod environment_transport;
+#[cfg(any(windows, test))]
+mod launch_environment;
+#[cfg(any(windows, test))]
+mod setup_acl_error;
+
+use std::fmt;
+use std::sync::Arc;
+
+use serde::Deserialize;
+use serde::Serialize;
+
+/// Cancellation hook used by Windows sandbox capture backends.
+#[derive(Clone)]
+pub struct WindowsSandboxCancellationToken {
+    is_cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+
+impl WindowsSandboxCancellationToken {
+    /// Creates a token backed by a cancellation predicate.
+    pub fn new(is_cancelled: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        Self {
+            is_cancelled: Arc::new(is_cancelled),
+        }
+    }
+
+    /// Returns whether the caller has requested cancellation.
+    pub fn is_cancelled(&self) -> bool {
+        (self.is_cancelled)()
+    }
+}
+
+impl fmt::Debug for WindowsSandboxCancellationToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WindowsSandboxCancellationToken")
+            .finish_non_exhaustive()
+    }
+}
+
+pub use codex_protocol::config_types::WindowsSandboxProxySettingsMode;
+
+/// Network settings installed by an administrator during managed Windows sandbox setup.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WindowsSandboxProvisioningSettings {
+    /// Loopback proxy ports permitted for the offline sandbox identity.
+    pub proxy_ports: Vec<u16>,
+    /// Whether the offline sandbox identity may exchange arbitrary loopback traffic.
+    pub allow_local_binding: bool,
+}
+
+#[cfg(target_os = "windows")]
+windows-sandbox-rs/src/deny_read_resolver.rs:74:    let glob_policy = FileSystemSandboxPolicy::restricted(
+windows-sandbox-rs/src/deny_read_resolver.rs:453:        let policy = FileSystemSandboxPolicy::restricted(vec![unreadable_glob_entry(pattern)]);
+windows-sandbox-rs/src/deny_read_resolver.rs:468:        let policy = FileSystemSandboxPolicy::restricted(vec![unreadable_glob_entry(
+windows-sandbox-rs/src/deny_read_resolver.rs:486:            FileSystemSandboxPolicy::restricted(vec![unreadable_glob_entry(pattern.clone())]);
+windows-sandbox-rs/src/deny_read_resolver.rs:513:        let policy = FileSystemSandboxPolicy::restricted(vec![unreadable_path_entry(missing)]);
+windows-sandbox-rs/src/deny_read_resolver.rs:541:        let policy = FileSystemSandboxPolicy::restricted(vec![unreadable_glob_entry(format!(
+windows-sandbox-rs/src/deny_read_resolver.rs:582:        let policy = FileSystemSandboxPolicy::restricted(vec![unreadable_glob_entry(
+windows-sandbox-rs/src/deny_read_resolver.rs:606:        let policy = FileSystemSandboxPolicy::restricted(vec![unreadable_glob_entry(
+windows-sandbox-rs/src/deny_read_resolver.rs:629:        let mut policy = FileSystemSandboxPolicy::restricted(vec![unreadable_glob_entry(
+windows-sandbox-rs/src/deny_read_resolver.rs:645:        let policy = FileSystemSandboxPolicy::restricted(vec![unreadable_glob_entry(
+windows-sandbox-rs/src/deny_read_resolver.rs:677:        let policy = FileSystemSandboxPolicy::restricted(vec![
+windows-sandbox-rs/src/deny_read_resolver.rs:696:        let policy = FileSystemSandboxPolicy::restricted(vec![unreadable_glob_entry(format!(
+windows-sandbox-rs/src/deny_read_resolver.rs:718:        let policy = FileSystemSandboxPolicy::restricted(vec![unreadable_glob_entry(format!(
+windows-sandbox-rs/src/deny_read_resolver.rs:742:        let policy = FileSystemSandboxPolicy::restricted(vec![
+windows-sandbox-rs/src/deny_read_resolver.rs:768:        let policy = FileSystemSandboxPolicy::restricted(vec![unreadable_glob_entry(
