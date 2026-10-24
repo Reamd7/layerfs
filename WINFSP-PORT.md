@@ -8,6 +8,50 @@
 LayerFS 核心闭环(挂载 → 卷内读写 → commit → 历史持久化)已在**原生 Windows**
 (无 WSL、无 Docker)真机跑通;daemon 控制面与 JS SDK 未接,一致性/性能测试未跑。
 
+## 支持程度(2026-10-24 实测口径)
+
+### 已真机验证(本机跑通)
+
+| 能力 | 证据 |
+|---|---|
+| 全 core 引擎 Windows 原生编译 | 14 crate 全绿(除 napi 绑定,沿用上游设计) |
+| 空项目 Init → Store 创建 | `initialized empty store`——import/history/persistence 全链在 NTFS 上工作 |
+| WinFsp 挂载/卸载 | `mounted at lfs-run\mount`,WinFsp 2.1 驱动实挂 |
+| 卷内文件创建 | `echo > hello.txt`(create 回调 → mutation 引擎 → Publication) |
+| 卷内列目录 | `dir /b` 列出 hello.txt(readdir + cookie↔marker 映射) |
+| 卷内读 | `type hello.txt` 内容完整(read_visit 窗口) |
+| 卷内追加写 | `echo second-run >> hello.txt` |
+| Commit 持久化 | `committed`——变更经 commit_captured 入 Store |
+| 历史跨会话存活 | 第二次运行从 Store 读回上次的 hello.txt 并叠加新 commit |
+
+即:LayerFS 的核心闭环(ephemeral mount → work → commit → durable history)在原生 Windows 上成立。
+
+### 已实现、待实测(只过了编译/单元级)
+
+- rename/跨目录移动、删除(set_delete+cleanup)、truncate、mkdir——代码在、走同一 mutation 引擎,未逐一实测
+- 并发访问(WinFsp 多回调线程 + park/unpark 执行器)——机制在,无并发测试
+- 大文件(> WRITE_WINDOW 分窗写)、大目录(readdir 翻页)——逻辑在,无规模测试
+- rename 之外的 write 路径变体:overwrite/replace、set_file_size 非零截断
+
+### 未实现(调用即拒)
+
+符号链接(以普通文件呈现)、reparse point、chmod/utimes(`set_basic_info`)、安全描述符/ACL、
+mmap 写直通(`write_to_eof`/`constrained_io`)、named streams(NTFS ADS)、ioctl/oplock、
+daemon 控制协议(多挂载 registry/dsh 集成)、JS/Node SDK(napi)。
+
+### 运行形态与边界
+
+- 单 Workspace runner:`winfsp_run <dir> -- <cmd>`,一条命令一个生命周期(mount→exec→commit→unmount);
+  多 agent = 多进程,无常驻 daemon
+- 裸跑:无沙箱、无 scratch,信任模型 = 裸 git worktree(升级路线:抄 Codex RestrictedToken 档或 MXC)
+- 一致性套件(winfsp-tests/pjdfstest)未跑;性能未调(readdir N+1 查询、Defender 双扫未排除)
+
+### 成熟度评级
+
+**实验级偏上**:不是玩具(真引擎、真驱动、真提交历史、持久化验证过),离生产差三件事——
+一致性测试、性能调优、daemon 化多挂载。单文件/小项目的 agent 工作流当天可用;
+重负载工作流(symlink 仓库、并发 agent、tools 全家桶)等上述三件事。
+
 ## 进度快照(对照 PR #427 macOS/NFS 同构工作)
 
 | 里程碑 | PR #427(macOS/NFS) | 本分支(Windows/WinFsp) |
