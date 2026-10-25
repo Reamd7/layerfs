@@ -231,11 +231,18 @@ rename_flipflop(计划排除面)。pjdfstest 未跑(需 POSIX 环境)。
 4. ~~overlapped 异步面~~ ✅(2026-10-26:全超尾读须答 STATUS_END_OF_FILE 而非
    0 字节成功——memfs 契约,ERROR_HANDLE_EOF 依赖此区分;五个 *_overlapped 族
    全过,套件升至 **41 族**)
-5. **性能**:Defender 排除需管理员(本机 shell 无权限且 MpPreference 报
+5. ~~notify 缓存失效~~ ✅(2026-10-26:winfsp-rs notify feature + `new_with_timer`
+   16ms 轮询;create/删除/rename 推事件,timer 在一个 Begin/Notify/End 批内 flush——
+   同时上报 ReadDirectoryChangesW 与驱动侧 InvalidateCachesAndNotifyChangeByName
+   缓存失效。**实测:新建文件 250ms 后即见于列表**(< 1000ms 超时),目录陈旧窗口
+   从超时约束降为 ≤16ms;rename 按契约发相邻 old/new 对,通知名为去掉前导分隔符的
+   相对路径(ReadDirectoryChangesW 形式;dirnotify_test 因此修复并保持绿)。
+   write/set_basic_info/set_file_size 回调无路径参数,属性/大小陈旧仍以 1000ms
+   超时为界)
+6. **性能**:Defender 排除需管理员(本机 shell 无权限且 MpPreference 报
    0x800106ba——疑似第三方杀软接管;命令:`Add-MpPreference -ExclusionPath
-   '<仓库路径>'`);file_info_timeout(1000ms)与 notify 的权衡——主动失效需
-   winfsp-rs 的 notify+async-io feature 包装 NotifyingFileSystemContext(侵入
-   host 构造,记为后续项);大目录重建枚举成本已由 stats 缓存兜底
+   '<仓库路径>'`);大目录重建枚举成本已由 stats 缓存兜底,且 notify 后重建只在
+   真实变更后发生(known-marker 路径直接读 buffer,零引擎访问)
 
 ## 许可警示
 
