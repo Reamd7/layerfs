@@ -70,7 +70,7 @@ impl WinFspSession {
             let context = LayerFsContext::new(queue, services, config.root);
             let mut params = VolumeParams::new();
             params
-                .sector_size(4096)
+                .sector_size(512)
                 .sectors_per_allocation_unit(1)
                 .volume_creation_time(0)
                 .file_info_timeout(1000)
