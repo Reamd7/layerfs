@@ -309,23 +309,42 @@ impl FileSystemContext for LayerFsContext {
         buffer: &mut [u8],
         offset: u64,
     ) -> winfsp::Result<u32> {
+        // The engine caps one read visit at READ_WINDOW; the kernel asks for
+        // whatever its caches batched, so visits chain until the buffer is
+        // full or the file ends short.
+        const WINDOW: usize = layerfs_overlay::READ_WINDOW;
         let services = self.request_services()?;
-        let request = self.next_request();
-        let length = u32::try_from(buffer.len()).unwrap_or(u32::MAX);
-        let answer = block_on(KernelData::read(
-            services,
-            self.mount(),
-            request,
-            context.serial,
-            context.handle,
-            ReadDataInput::File { offset, length },
-        ))
-        .map_err(|failure| internal(&failure.reason))?;
-        let data = answer.map_err(map_refusal)?;
-        let bytes = data.bytes();
-        let copied = bytes.len().min(buffer.len());
-        buffer[..copied].copy_from_slice(&bytes[..copied]);
-        Ok(copied as u32)
+        let mut filled = 0usize;
+        let mut position = offset;
+        while filled < buffer.len() {
+            let room = buffer.len() - filled;
+            let span = room.min(WINDOW);
+            let length = u32::try_from(span).unwrap_or(u32::MAX);
+            let request = self.next_request();
+            let answer = block_on(KernelData::read(
+                services.clone(),
+                self.mount(),
+                request,
+                context.serial,
+                context.handle,
+                ReadDataInput::File {
+                    offset: position,
+                    length,
+                },
+            ))
+            .map_err(|failure| internal(&failure.reason))?;
+            let data = answer.map_err(map_refusal)?;
+            let bytes = data.bytes();
+            let copied = bytes.len().min(span);
+            buffer[filled..filled + copied].copy_from_slice(&bytes[..copied]);
+            filled += copied;
+            position += copied as u64;
+            // A short answer is the file's end; nothing further to fill.
+            if copied < span {
+                break;
+            }
+        }
+        Ok(filled as u32)
     }
 
     fn read_directory(
