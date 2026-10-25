@@ -7,9 +7,10 @@
 
 LayerFS 核心闭环(挂载 → 卷内读写 → commit → 历史持久化)**与 daemon 控制面**
 (Mount/Attach/Unmount/Force 经 `execute_control`,WinFsp 内核半)已在**原生 Windows**
-真机跑通;`layerfs-winfsp` 裸跑 runner、cmd 语义矩阵/韧性/互斥测试、winfsp-tests
-一致性套件(15 族通过)与 Windows 版 Node addon(按 owner #352 边界应答)全部实测。
-剩余:大目录(>64 条窗口)枚举分页缺陷、DOS 扩展属性面、SDK 的 Windows worker 路线。
+真机跑通;`layerfs-winfsp` 裸跑 runner、cmd 语义矩阵/韧性/互斥/大目录分页测试、
+winfsp-tests 一致性套件(15 族 + querydir 共 16 族通过)与 Windows 版 Node addon
+(按 owner #352 边界应答)全部实测。剩余:DOS 扩展属性面、SDK 的 Windows worker
+路线、standby 崩溃归因。
 
 ## 支持程度(2026-10-25 实测口径)
 
@@ -167,18 +168,20 @@ Sandbox 四职能(命令隔离/scratch/环境一致/FUSE 内核边界)中只有�
 --resilient --case-insensitive-cmp`,按计划排除 stream/ea/reparse/flipflop 面。
 套件首败即停,失败项逐个归因(修复或 known)后推进。本轮修复驱动的真实缺陷:
 delete-on-close 双通道、非空目录 SetDelete、ARCHIVE/READONLY 位、SetFileAttributes
-往返、目录只读位、目录 replace 拒绝。
+往返、目录只读位、目录 replace 拒绝、**大目录跨窗枚举**(WinFsp 读取器无状态:新起点
+或陌生 marker 时从 offset 0 链窗重建整个列表,窗锚定在上窗最后一条的 cookie——引擎
+cursor 拒绝"已发布名的下一个"偏移;有回归测试)。
 
-**通过(15)**:create_readonlydir、create_related、create_sd、create_backup、
+**通过(16)**:create_readonlydir、create_related、create_sd、create_backup、
 create_restore、create_share、create_curdir、delete、delete_pending、delete_mmap、
-rename、rename_backslash、rename_open、rename_caseins、rename_mmap。
+rename、rename_backslash、rename_open、rename_caseins、rename_mmap、querydir。
 
 **known 归因(排除)**:create_test(尾随 `\` 语义:WinFsp FSD 剥除且不设目录位,
 用户态不可实现)、create_fileattr/setfileinfo(HIDDEN/SYSTEM 无存储面)、
 create_allocation(预分配需引擎面)、create_notraverse、getsecurity/setsecurity
 (ACL)、getfileinfo×2(按句柄名查询)、create_namelen、rdwr_noncached/
 noncached_overlapped/writethru 变体与 flush(NO_BUFFERING/写直通语义)、
-querydir(>64 条引擎窗口分页:每次回调重枚举到窗口尾,计数错)、delete_ex/
+delete_ex/
 rename_ex(POSIX 变体)、delete_standby/rename_standby(EXCEPTION 0xC0000006 崩)、
 getvolinfo(卷句柄打开)。pjdfstest 未跑(需 POSIX 环境)。
 
@@ -193,20 +196,21 @@ getvolinfo(卷句柄打开)。pjdfstest 未跑(需 POSIX 环境)。
 5. SDK:◐ addon Windows 化完成(discovery 锁/权限、输出读位、sandbox 组 Unix-only
    拒);完整接通的 blocker 是 owner #352(Store 直连 Linux-only)→ Windows 走
    worker 路线(dsh/WSL2 侧设计),本仓库范围外
-6. 一致性:◐ winfsp-tests 15 族 OK、失败全归因;pjdfstest 未跑
-7. 上游合规:◐ 逐 commit LOC(96,886 → 97,975,delta +1,089;口径 core/crates
+6. 一致性:◐ winfsp-tests 16 族 OK(含 querydir)、失败全归因;pjdfstest 未跑
+7. 上游合规:◐ 逐 commit LOC(96,886 → 97,988,delta +1,102;口径 core/crates
    src,api/binding 不在计数根)、boundary 回基线(5 个预存违规为移植提交遗留)、
    fmt/clippy 改动面干净;linux target 回归 NOT_RUN(本机无
    x86_64-unknown-linux-gnu 组件)
 
 新增剩余(按优先级):
 
-1. **大目录枚举分页**:引擎目录窗口(64 条)与 DirBuffer/marker 恢复的交互——每次
-   readdir 回调重枚举到窗口尾,>64 条目录计数错(小目录功能正确;querydir_test 归因)
+1. ~~大目录枚举分页~~ ✅(2026-10-25 二轮:窗口链重建 + cookie 锚定;querydir_test
+   通过,回归测试 `large_directory_enumerates_completely`)
 2. **DOS 扩展属性面**:HIDDEN/SYSTEM 存储(xattr/元数据扩展)或明确文档化为不支持
 3. **standby/mmap 族崩溃归因**(EXCEPTION 0xC0000006,两处)
 4. **性能**:Defender 排除;file_info_timeout(1000ms)与 notify 的权衡(缓存窗口内
-   属性查询可能陈旧——file_info_timeout=0 会破坏 DirInfo 缓存驱动的枚举,已回退)
+   属性查询可能陈旧——file_info_timeout=0 会破坏 DirInfo 缓存驱动的枚举,已回退);
+   大目录重建枚举的成本(锚定链窗,100 条 ≈ 2 窗;stats 缓存兜底 LOOKUP/GETATTR)
 
 ## 许可警示
 
