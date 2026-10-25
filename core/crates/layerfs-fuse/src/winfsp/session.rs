@@ -4,9 +4,7 @@
 use super::context::LayerFsContext;
 use crate::{dispatch::MountRequests, ports::MountServices};
 use std::{
-    fmt,
-    fs,
-    io,
+    fmt, fs, io,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -83,9 +81,10 @@ impl WinFspSession {
                 .filesystem_name("layerfs");
             let mut host: FileSystemHost<LayerFsContext, FineGuard> =
                 FileSystemHost::new(params, context)
-                .map_err(|error| io::Error::other(error.to_string()))?;
+                    .map_err(|error| io::Error::other(error.to_string()))?;
             host.mount(mount_point(&config.directory)?)?;
-            host.start().map_err(|error| io::Error::other(error.to_string()))?;
+            host.start()
+                .map_err(|error| io::Error::other(error.to_string()))?;
             Ok(host)
         })();
         match started {

@@ -22,6 +22,7 @@
 //!   write, negotiation facts) have no WinFsp equivalent and are absent.
 mod blocking;
 mod context;
+mod context_support;
 mod session;
 
 pub use context::{FileContext, LayerFsContext};

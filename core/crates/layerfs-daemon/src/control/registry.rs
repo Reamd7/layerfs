@@ -84,6 +84,16 @@ impl Service {
         value.epoch = value.epoch.saturating_add(1);
         Ok(value.workspace.clone())
     }
+    /// Poison recovery stores this exact owner only; a poisoned registry never
+    /// authorizes another product operation.
+    pub(super) fn settle(&self, token: WorkspaceToken, kernel: Kernel, activity: Activity) {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        if let Ok(binding) = bound_mut(&mut entries, token) {
+            binding.kernel = kernel;
+            binding.activity = activity;
+            binding.epoch = binding.epoch.saturating_add(1);
+        }
+    }
 }
 pub(super) fn bound(
     entries: &BTreeMap<WorkspaceId, Entry>,

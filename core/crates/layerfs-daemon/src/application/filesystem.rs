@@ -21,8 +21,9 @@ pub(super) fn service(
         None => Service::new(store, owner),
     })
 }
-/// Kernel serving is a Linux capability; elsewhere control alone is assembled.
-#[cfg(not(target_os = "linux"))]
+/// Kernel serving is a Linux capability; elsewhere control alone is
+/// assembled, except Windows' WinFsp route.
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub(super) fn assemble(
     _setup: &layerfs_bridge::daemon_setup::DaemonSetup,
 ) -> std::io::Result<Option<Arc<KernelServing>>> {
@@ -30,6 +31,8 @@ pub(super) fn assemble(
 }
 #[cfg(target_os = "linux")]
 pub(super) use linux::assemble;
+#[cfg(windows)]
+pub(super) use windows::assemble;
 #[cfg(target_os = "linux")]
 mod linux {
     use crate::control::{KernelConfig, KernelServing};
@@ -127,5 +130,37 @@ mod linux {
     }
     fn invalid(message: &'static str) -> io::Error {
         io::Error::new(io::ErrorKind::InvalidInput, message)
+    }
+}
+
+#[cfg(windows)]
+mod windows {
+    use crate::control::{KernelConfig, KernelServing};
+    use layerfs_bridge::daemon_setup::DaemonSetup;
+    use std::{path::Path, sync::Arc, time::Duration};
+
+    /// Observation deadlines shared with the Linux route's records.
+    const READY_WAIT: Duration = Duration::from_secs(5);
+    const DRAIN_WAIT: Duration = Duration::from_secs(5);
+
+    /// WinFsp serving: no device node and no worker pool exist to prepare;
+    /// only the mount home is created and checked before control
+    /// readiness. Nothing is mounted until an explicit Attach.
+    pub(in crate::application) fn assemble(
+        setup: &DaemonSetup,
+    ) -> std::io::Result<Option<Arc<KernelServing>>> {
+        let mounts = Path::new(&setup.mounts);
+        // Windows has no separate daemon/command identity: the bare-run
+        // trust model records this daemon as its invoker.
+        KernelServing::start(KernelConfig {
+            mounts: mounts.to_owned(),
+            owner_uid: 0,
+            owner_gid: 0,
+            command_uid: 0,
+            command_gid: 0,
+            ready_wait: READY_WAIT,
+            drain_wait: DRAIN_WAIT,
+        })
+        .map(|serving| Some(Arc::new(serving)))
     }
 }

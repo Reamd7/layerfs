@@ -1,6 +1,10 @@
 //! `FileSystemContext` adapter: WinFsp callbacks over the portable
 //! `operations` engine, one blocking service visit per callback.
 use super::blocking::block_on;
+use super::context_support::{
+    attributes, filetime, fill_info, internal, map_declined, map_refusal, refused_name, unix_time,
+    Mutated,
+};
 use crate::{
     dispatch::MountRequests,
     operations::{
@@ -11,9 +15,7 @@ use crate::{
 };
 use layerfs_content::{filesystem::PathName, object::inode_leaf::InodeKind};
 use layerfs_overlay::{KernelMount, OpenFile, WRITE_WINDOW};
-use layerfs_workspace::{
-    KernelReadOperation, Refusal, ViewStat,
-};
+use layerfs_workspace::{KernelReadOperation, Refusal, ViewStat};
 use std::{
     collections::HashMap,
     sync::{
@@ -24,15 +26,15 @@ use std::{
 };
 use windows::Win32::{
     Foundation::{
-        STATUS_ACCESS_DENIED, STATUS_DISK_FULL, STATUS_DIRECTORY_NOT_EMPTY,
+        STATUS_ACCESS_DENIED, STATUS_DIRECTORY_NOT_EMPTY, STATUS_DISK_FULL,
         STATUS_FILE_IS_A_DIRECTORY, STATUS_FILE_TOO_LARGE, STATUS_INTERNAL_ERROR,
         STATUS_INVALID_DEVICE_REQUEST, STATUS_INVALID_PARAMETER, STATUS_NOT_A_DIRECTORY,
         STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_INVALID, STATUS_OBJECT_NAME_NOT_FOUND,
         STATUS_RETRY, STATUS_TOO_MANY_LINKS,
     },
     Storage::FileSystem::{
-        FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY,
-        FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY, FILE_WRITE_DATA,
+        FILE_APPEND_DATA, FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_DIRECTORY,
+        FILE_ATTRIBUTE_READONLY, FILE_WRITE_DATA,
     },
 };
 use winfsp::{
@@ -46,8 +48,10 @@ use winfsp::{
 /// Mirrors the Linux STATFS declaration (`request/inline.rs`).
 const DECLARED_BLOCKS: u64 = 1 << 30;
 const BLOCK_BYTES: u64 = 4096;
-/// Unix epoch to Windows FILETIME offset, in seconds.
-const EPOCH_DELTA_SECONDS: i64 = 11_644_473_600;
+
+/// Entries one open directory may remember before its attribute cache
+/// resets, keeping enumeration state bounded.
+const STATS_CACHE_LIMIT: usize = 10_000;
 
 /// What one decided read owns, copied out of the engine's custody before the
 /// reply: the inode's attributes and, for OPEN/OPENDIR, its descriptor.
@@ -68,6 +72,9 @@ pub struct FileContext {
     /// cookie each one was offered at. WinFsp resumes enumeration by name;
     /// LayerFS resumes by cookie.
     markers: Mutex<HashMap<String, u64>>,
+    /// Attributes already reported in this handle's enumeration, keyed by
+    /// serial: a resumed read skips the GETATTR an entry already paid for.
+    stats: Mutex<HashMap<u64, ViewStat>>,
     /// WinFsp's set_delete asks for deletion to happen at cleanup, not at
     /// the asking call; this carries the request between the two.
     pending_delete: Mutex<bool>,
@@ -86,6 +93,7 @@ impl FileContext {
             directory,
             dir_buffer: DirBuffer::new(),
             markers: Mutex::new(HashMap::new()),
+            stats: Mutex::new(HashMap::new()),
             pending_delete: Mutex::new(false),
         }
     }
@@ -136,6 +144,11 @@ impl LayerFsContext {
         for component in &components {
             let name = PathName::from_bytes(component.as_bytes())
                 .map_err(|_| FspError::from(STATUS_INVALID_PARAMETER))?;
+            if refused_name(&name) {
+                // Windows could never have held this name, so it cannot be
+                // found here whatever the earlier components resolved to.
+                return Err(FspError::from(STATUS_OBJECT_NAME_NOT_FOUND));
+            }
             let operation = KernelReadOperation::Lookup {
                 parent: serial,
                 name,
@@ -151,7 +164,12 @@ impl LayerFsContext {
             // An empty path is the mount root itself.
             None => {
                 let resolved = self
-                    .read_visit(&services, mount, serial, KernelReadOperation::Getattr { serial })?
+                    .read_visit(
+                        &services,
+                        mount,
+                        serial,
+                        KernelReadOperation::Getattr { serial },
+                    )?
                     .ok_or_else(|| FspError::from(STATUS_OBJECT_NAME_NOT_FOUND))?;
                 Ok((serial, resolved.stat))
             }
@@ -215,7 +233,7 @@ impl FileSystemContext for LayerFsContext {
     fn open(
         &self,
         file_name: &U16CStr,
-        _create_options: u32,
+        create_options: u32,
         granted_access: u32,
         file_info: &mut OpenFileInfo,
     ) -> winfsp::Result<Self::FileContext> {
@@ -231,7 +249,20 @@ impl FileSystemContext for LayerFsContext {
             .read_visit(&services, self.mount(), serial, operation)?
             .ok_or_else(|| FspError::from(STATUS_OBJECT_NAME_NOT_FOUND))?;
         fill_info(file_info.as_mut(), &resolved.stat);
-        Ok(FileContext::new(serial, &resolved))
+        let context = FileContext::new(serial, &resolved);
+        // `DeleteFileW`/`RemoveDirectoryW` open the existing name with the
+        // delete declared at open (FILE_DELETE_ON_CLOSE), never a SetDelete
+        // call: carry it to Cleanup the same way. A non-empty directory
+        // opened this way still opens — the delete happens at Cleanup, and
+        // its refusal there is silent, as the delete-on-close contract is.
+        const FILE_DELETE_ON_CLOSE: u32 = 0x0000_1000;
+        if create_options & FILE_DELETE_ON_CLOSE != 0 {
+            *context
+                .pending_delete
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner()) = true;
+        }
+        Ok(context)
     }
 
     fn close(&self, context: Self::FileContext) {
@@ -320,6 +351,15 @@ impl FileSystemContext for LayerFsContext {
                 .and_then(|cookie| cookie.checked_add(1))
                 .ok_or_else(|| FspError::from(STATUS_INVALID_PARAMETER))?,
         };
+        if marker.is_none() {
+            // A fresh enumeration reports current facts; cached ones may
+            // predate mutations from other handles.
+            context
+                .stats
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .clear();
+        }
         let services = self.request_services()?;
         let mut stream = block_on(DirectoryStream::prepare(
             services.clone(),
@@ -351,7 +391,27 @@ impl FileSystemContext for LayerFsContext {
                     let mut written = 0usize;
                     for (name, cookie) in &entries {
                         let serial = self.serial_of(&services, name, context.serial, handle)?;
-                        let stat = self.stat_of(&services, serial)?;
+                        let cached = context
+                            .stats
+                            .lock()
+                            .unwrap_or_else(|poison| poison.into_inner())
+                            .get(&serial)
+                            .cloned();
+                        let stat = match cached {
+                            Some(stat) => stat,
+                            None => {
+                                let stat = self.stat_of(&services, serial)?;
+                                let mut stats = context
+                                    .stats
+                                    .lock()
+                                    .unwrap_or_else(|poison| poison.into_inner());
+                                if stats.len() > STATS_CACHE_LIMIT {
+                                    stats.clear();
+                                }
+                                stats.insert(serial, stat.clone());
+                                stat
+                            }
+                        };
                         let mut entry: DirInfo = DirInfo::new();
                         entry.file_info_mut().file_attributes = attributes(&stat);
                         entry.file_info_mut().index_number = serial;
@@ -390,26 +450,34 @@ impl FileSystemContext for LayerFsContext {
         file_name: &U16CStr,
         create_options: u32,
         granted_access: u32,
-        _file_attributes: u32,
+        file_attributes: u32,
         _security_descriptor: Option<&[core::ffi::c_void]>,
         _allocation_size: u64,
         _extra_buffer: Option<&[u8]>,
         _extra_buffer_is_reparse_point: bool,
         file_info: &mut OpenFileInfo,
     ) -> winfsp::Result<Self::FileContext> {
+        let (_, leaf) = self.path_components(file_name)?;
+        if refused_name(&leaf) {
+            // A name Windows itself could never hold cannot be created.
+            return Err(FspError::from(STATUS_OBJECT_NAME_INVALID));
+        }
         let (parent, name) = self.resolve_parent(file_name)?;
         let writable = granted_access & (FILE_WRITE_DATA.0 | FILE_APPEND_DATA.0) != 0;
+        // A create's read-only attribute maps to the write-disabled mode;
+        // other DOS attributes have no stored face here (WINFSP-PORT.md).
+        let readonly = file_attributes & FILE_ATTRIBUTE_READONLY.0 != 0;
         let input = if create_options & 0x0000_0001 != 0 {
             MutationInput::Named(layerfs_workspace::Operation::Mkdir {
                 parent,
                 name,
-                mode: 0o755,
+                mode: if readonly { 0o555 } else { 0o755 },
             })
         } else {
             MutationInput::Named(layerfs_workspace::Operation::Create {
                 parent,
                 name,
-                mode: 0o644,
+                mode: if readonly { 0o444 } else { 0o644 },
             })
         };
         let mutated = self.mutate(parent, None, input, Some(writable))?;
@@ -424,7 +492,62 @@ impl FileSystemContext for LayerFsContext {
             directory: None,
         };
         fill_info(file_info.as_mut(), &resolved.stat);
-        Ok(FileContext::new(serial, &resolved))
+        let context = FileContext::new(serial, &resolved);
+        // `DeleteFileW`/`RemoveDirectoryW` declare the delete at Create
+        // (FILE_DELETE_ON_CLOSE) instead of a SetDelete call: carry it to
+        // Cleanup exactly as set_delete would.
+        const FILE_DELETE_ON_CLOSE: u32 = 0x0000_1000;
+        if create_options & FILE_DELETE_ON_CLOSE != 0 {
+            *context
+                .pending_delete
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner()) = true;
+        }
+        Ok(context)
+    }
+
+    fn set_basic_info(
+        &self,
+        context: &Self::FileContext,
+        file_attributes: u32,
+        _creation_time: u64,
+        _last_access_time: u64,
+        last_write_time: u64,
+        _last_change_time: u64,
+        file_info: &mut FileInfo,
+    ) -> winfsp::Result<()> {
+        // The DOS attribute face this port stores: the read-only bit is the
+        // write-disabled mode (a clear adds the owner's write bit back);
+        // hidden/system hold no stored face. A written time is the mtime.
+        let services = self.request_services()?;
+        let current = self
+            .read_visit(
+                &services,
+                self.mount(),
+                context.serial,
+                KernelReadOperation::Getattr {
+                    serial: context.serial,
+                },
+            )?
+            .ok_or_else(|| FspError::from(STATUS_OBJECT_NAME_NOT_FOUND))?;
+        let mode = u32::from(current.stat.metadata.mode);
+        let mode = if file_attributes & FILE_ATTRIBUTE_READONLY.0 != 0 {
+            mode & !0o222
+        } else {
+            mode | 0o200
+        };
+        let mtime = unix_time(last_write_time);
+        let input = MutationInput::Named(layerfs_workspace::Operation::SetAttributes {
+            serial: context.serial,
+            mode: Some(mode),
+            mtime,
+            size: None,
+        });
+        let mutated = self.mutate(context.serial, None, input, None)?;
+        if let Some(stat) = &mutated.stat {
+            fill_info(file_info, stat);
+        }
+        Ok(())
     }
 
     fn write(
@@ -513,7 +636,34 @@ impl FileSystemContext for LayerFsContext {
         replace_if_exists: bool,
     ) -> winfsp::Result<()> {
         let (parent, name) = self.resolve_parent(file_name)?;
+        let (_, leaf) = self.path_components(new_file_name)?;
+        if refused_name(&leaf) {
+            // Renaming onto a name Windows itself could never hold is as
+            // invalid as creating it.
+            return Err(FspError::from(STATUS_OBJECT_NAME_INVALID));
+        }
         let (new_parent, new_name) = self.resolve_parent(new_file_name)?;
+        if replace_if_exists {
+            // Windows never replaces a directory by rename, whatever the
+            // engine's empty-directory grammar would allow.
+            if let Some(services) = self.request_services().ok() {
+                if let Some(resolved) = self
+                    .read_visit(
+                        &services,
+                        self.mount(),
+                        new_parent,
+                        KernelReadOperation::Lookup {
+                            parent: new_parent,
+                            name: new_name.clone(),
+                        },
+                    )?
+                    .filter(|resolved| resolved.stat.kind == InodeKind::Directory)
+                {
+                    let _ = resolved;
+                    return Err(FspError::from(STATUS_ACCESS_DENIED));
+                }
+            }
+        }
         // Root-relative ancestry evidence of the destination parent, which a
         // directory rename across parents requires.
         let destination_path = self.root_path(new_file_name);
@@ -535,6 +685,18 @@ impl FileSystemContext for LayerFsContext {
         _file_name: &U16CStr,
         delete_file: bool,
     ) -> winfsp::Result<()> {
+        if delete_file && context.directory {
+            // The disposition the caller wants to set: a directory must be
+            // deletable now, or the set fails exactly as `RemoveDirectoryW`
+            // fails on a non-empty one.
+            let services = self.request_services()?;
+            let handle = context
+                .handle
+                .ok_or_else(|| FspError::from(STATUS_INTERNAL_ERROR))?;
+            if !self.directory_empty(&services, context.serial, handle)? {
+                return Err(FspError::from(STATUS_DIRECTORY_NOT_EMPTY));
+            }
+        }
         *context
             .pending_delete
             .lock()
@@ -575,6 +737,37 @@ impl FileSystemContext for LayerFsContext {
 }
 
 impl LayerFsContext {
+    /// Whether one directory holds any entry beyond its dots; one stream
+    /// visit, disposed before the answer returns.
+    fn directory_empty(
+        &self,
+        services: &Arc<dyn RequestServices>,
+        serial: u64,
+        handle: u64,
+    ) -> Result<bool, FspError> {
+        let mut stream = block_on(DirectoryStream::prepare(
+            services.clone(),
+            self.mount(),
+            self.next_request(),
+            serial,
+            handle,
+            0,
+        ))
+        .map_err(|failure| internal(&failure.reason))?;
+        loop {
+            match block_on(stream.next()).map_err(|failure| internal(&failure.reason))? {
+                DirectoryStep::End(_) => return Ok(true),
+                DirectoryStep::Batch(batch) => {
+                    if batch.entries().next().is_some() {
+                        let _ = block_on(batch.accept(0));
+                        return Ok(false);
+                    }
+                    stream =
+                        block_on(batch.accept(0)).map_err(|failure| internal(&failure.reason))?;
+                }
+            }
+        }
+    }
     /// The serial of one name inside the enumerated directory; the stream's
     /// batch entries already carried it, but the portable batch type keeps
     /// only names and cookies, so one LOOKUP recovers it.
@@ -586,8 +779,8 @@ impl LayerFsContext {
         handle: u64,
     ) -> Result<u64, FspError> {
         let _ = handle;
-        let name = PathName::from_bytes(name)
-            .map_err(|_| FspError::from(STATUS_INVALID_PARAMETER))?;
+        let name =
+            PathName::from_bytes(name).map_err(|_| FspError::from(STATUS_INVALID_PARAMETER))?;
         let resolved = self
             .read_visit(
                 services,
@@ -620,6 +813,10 @@ impl LayerFsContext {
     /// Resolves a path to its parent serial and final name.
     fn resolve_parent(&self, file_name: &U16CStr) -> Result<(u64, PathName), FspError> {
         let (parent, name) = self.path_components(file_name)?;
+        if refused_name(&name) {
+            // The name cannot exist, so there is nothing to resolve to.
+            return Err(FspError::from(STATUS_OBJECT_NAME_NOT_FOUND));
+        }
         let services = self.request_services()?;
         let mut serial = self.root;
         for component in &parent {
@@ -641,10 +838,7 @@ impl LayerFsContext {
 
     /// Splits a WinFsp path into parent components and the final name, both
     /// owned. A root path has no name to operate on and is refused.
-    fn path_components(
-        &self,
-        file_name: &U16CStr,
-    ) -> Result<(Vec<PathName>, PathName), FspError> {
+    fn path_components(&self, file_name: &U16CStr) -> Result<(Vec<PathName>, PathName), FspError> {
         let text = file_name.to_string_lossy();
         let mut parts = text
             .split('\\')
@@ -695,89 +889,10 @@ impl LayerFsContext {
             Ok(published) => Mutated {
                 stat: published.stat.clone(),
                 file: published.file,
-                changed: published.changed,
             },
             Err(declined) => return Err(map_declined(declined)),
         };
         let _ = block_on(mutation.replied());
         Ok(value)
     }
-}
-
-/// What one decided mutation published, copied out of the engine's custody.
-struct Mutated {
-    stat: Option<ViewStat>,
-    file: Option<OpenFile>,
-    changed: bool,
-}
-
-fn map_declined(declined: Declined) -> FspError {
-    match declined {
-        Declined::Refused(refusal) => map_refusal(refusal),
-        Declined::NoSpace => FspError::from(STATUS_DISK_FULL),
-        Declined::Contended => FspError::from(STATUS_RETRY),
-        Declined::TargetTooLong => FspError::from(STATUS_OBJECT_NAME_INVALID),
-    }
-}
-
-fn map_refusal(refusal: Refusal) -> FspError {
-    FspError::from(match refusal {
-        Refusal::Exists => STATUS_OBJECT_NAME_COLLISION,
-        Refusal::Missing => STATUS_OBJECT_NAME_NOT_FOUND,
-        Refusal::NotDirectory => STATUS_NOT_A_DIRECTORY,
-        Refusal::IsDirectory => STATUS_FILE_IS_A_DIRECTORY,
-        Refusal::NotEmpty => STATUS_DIRECTORY_NOT_EMPTY,
-        Refusal::NotPermitted | Refusal::Unsupported | Refusal::AncestryRequired
-        | Refusal::AncestryMismatch => STATUS_ACCESS_DENIED,
-        Refusal::Invalid => STATUS_INVALID_PARAMETER,
-        Refusal::TooManyLinks => STATUS_TOO_MANY_LINKS,
-        Refusal::TooLarge => STATUS_FILE_TOO_LARGE,
-    })
-}
-
-fn internal(error: &ServiceError) -> FspError {
-    if error.is::<Fenced>() {
-        FspError::from(STATUS_INVALID_DEVICE_REQUEST)
-    } else {
-        FspError::from(STATUS_INTERNAL_ERROR)
-    }
-}
-
-fn attributes(stat: &ViewStat) -> u32 {
-    match stat.kind {
-        InodeKind::Directory => FILE_ATTRIBUTE_DIRECTORY.0,
-        // This increment mounts read-only and reports no reparse points.
-        InodeKind::RegularFile | InodeKind::Symlink => {
-            let mode = stat.metadata.mode;
-            if mode & 0o222 == 0 {
-                FILE_ATTRIBUTE_READONLY.0
-            } else {
-                FILE_ATTRIBUTE_NORMAL.0
-            }
-        }
-    }
-}
-
-fn filetime(seconds: i64, nanoseconds: u32) -> u64 {
-    let shifted = seconds
-        .checked_add(EPOCH_DELTA_SECONDS)
-        .unwrap_or(i64::MAX);
-    u64::try_from(shifted)
-        .unwrap_or(u64::MAX)
-        .saturating_mul(10_000_000)
-        .saturating_add(u64::from(nanoseconds) / 100)
-}
-
-fn fill_info(file_info: &mut FileInfo, stat: &ViewStat) {
-    file_info.file_attributes = attributes(stat);
-    file_info.allocation_size = stat.logical_len;
-    file_info.file_size = stat.logical_len;
-    let time = filetime(stat.metadata.mtime_seconds, stat.metadata.mtime_nanoseconds);
-    file_info.creation_time = time;
-    file_info.last_access_time = time;
-    file_info.last_write_time = time;
-    file_info.change_time = time;
-    file_info.index_number = stat.serial;
-    file_info.hard_links = 0;
-    file_info.ea_size = 0;
 }

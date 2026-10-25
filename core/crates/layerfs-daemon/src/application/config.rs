@@ -2,11 +2,15 @@
 use layerfs_bridge::daemon_setup::DaemonSetup;
 #[cfg(unix)]
 use nix::{fcntl::OFlag, unistd::Uid};
-use std::{fs, io::{self, Read}, path::Path};
 #[cfg(unix)]
 use std::fs::OpenOptions;
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+use std::{
+    fs,
+    io::{self, Read},
+    path::Path,
+};
 
 /// Opens a protected file without following final-component symlinks. Windows
 /// has no std-level O_NOFOLLOW equivalent; there the hardening is the NTFS ACL
@@ -136,7 +140,14 @@ fn secure_process() -> io::Result<()> {
     }
     Ok(())
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+fn secure_process() -> io::Result<()> {
+    // The bare-run trust model (WINFSP-PORT.md): no umask or prctl exists
+    // here; the daemon runs as its invoker with the private tree's
+    // inherited ACLs.
+    Ok(())
+}
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 fn secure_process() -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,

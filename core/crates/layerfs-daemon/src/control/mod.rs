@@ -5,6 +5,8 @@ mod cleanup;
 #[cfg(target_os = "linux")]
 mod detach;
 mod dirty;
+#[cfg(windows)]
+mod export;
 mod failure;
 mod force;
 mod inspect;

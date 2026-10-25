@@ -17,6 +17,8 @@ pub(super) enum Departure {
     Unattached,
     #[cfg(target_os = "linux")]
     Session(Box<super::serving::Attached>),
+    #[cfg(target_os = "windows")]
+    Session(Box<super::export::WinFspAttached>),
 }
 impl Service {
     /// Refuses uncommitted changes with their paths unless `discard`.
@@ -34,6 +36,8 @@ impl Service {
             Departure::Session(attached) => {
                 return self.unmount_kernel(token, workspace, *attached)
             }
+            #[cfg(target_os = "windows")]
+            Departure::Session(attached) => return self.unmount_winfsp(token, workspace, attached),
         };
         self.close(token, &workspace, None)
     }
@@ -46,14 +50,13 @@ impl Service {
         let mut entries = self.entries.lock().map_err(|_| Failure::Poisoned)?;
         let value = bound_mut(&mut entries, token)?;
         // Retained custody answers before ordinary activity admission.
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         if let Kernel::Retained(kept) = &value.kernel {
             return Err(Failure::Retained(Box::new(kept.custody(token))));
         }
         idle(value)?;
         let departure = match value.kernel {
             Kernel::Unattached => Departure::Unattached,
-            #[cfg(target_os = "linux")]
             Kernel::Attaching => {
                 return Err(Failure::kernel(
                     layerfs_bridge::control::ControlCode::Unknown,
@@ -63,6 +66,11 @@ impl Service {
             }
             #[cfg(target_os = "linux")]
             _ => Departure::Session(super::detach::take(
+                &mut value.kernel,
+                layerfs_bridge::control::MountPhase::Probing,
+            )?),
+            #[cfg(target_os = "windows")]
+            _ => Departure::Session(super::export::take_winfsp(
                 &mut value.kernel,
                 layerfs_bridge::control::MountPhase::Probing,
             )?),
@@ -171,7 +179,7 @@ impl Service {
         failure
     }
     /// Attach is a Linux capability; elsewhere it is refused before effects.
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     pub(super) fn attach(
         &self,
         _token: WorkspaceToken,
@@ -179,7 +187,7 @@ impl Service {
     ) -> Result<Success, Failure> {
         Err(Failure::Rejected(
             layerfs_bridge::control::ControlCode::Invalid,
-            "kernel serving requires Linux",
+            "kernel serving requires a kernel route",
         ))
     }
 }

@@ -2,12 +2,9 @@
 //! drain with its one plain detach, then Revoke and Close. Nothing is repeated.
 #[cfg(target_os = "linux")]
 use super::serving::{stage, work, Attached};
-use super::{
-    kernel::Kernel,
-    registry::{bound_mut, Binding},
-    types::KernelFailure,
-    Failure, Service, Success,
-};
+use super::{kernel::Kernel, registry::Binding, types::KernelFailure, Failure};
+#[cfg(not(target_os = "windows"))]
+use super::{registry::bound_mut, Service, Success};
 #[cfg(target_os = "linux")]
 use crate::store::BoundWorkspace;
 #[cfg(target_os = "linux")]
@@ -43,18 +40,16 @@ fn refused(code: ControlCode, phase: &'static str, detail: &'static str) -> Fail
 /// The whole before-effect decision, made under the registry lock and in this
 /// order. A refusal changes nothing. Admitted, it returns the Commit knowledge
 /// the receipt will carry: copied here, never settled by a later read.
-fn guard(
+pub(super) fn guard(
     value: &Binding,
     token: WorkspaceToken,
     relinquish_unknown: bool,
 ) -> Result<CommitKnowledge, Failure> {
     // Stored custody answers first: no second abort or detach ever follows it.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     if let Kernel::Retained(kept) = &value.kernel {
         return Err(Failure::Retained(Box::new(kept.custody(token))));
     }
-    #[cfg(not(target_os = "linux"))]
-    let _ = token;
     if matches!(
         value.activity,
         Activity::Committing | Activity::Attaching | Activity::Closing
@@ -97,8 +92,8 @@ fn guard(
     }
     Ok(commit)
 }
-/// Only a serving connection can be forced; answers whether its abort control
-/// is bound. Outside Linux no entry ever owns a connection.
+/// Only a serving connection can be forced; answers whether its abort
+/// control is bound. Outside Linux and Windows no entry ever owns one.
 fn connection(kernel: &Kernel) -> Result<bool, Failure> {
     match kernel {
         Kernel::Unattached => Err(refused(
@@ -106,7 +101,6 @@ fn connection(kernel: &Kernel) -> Result<bool, Failure> {
             ADMISSION,
             "Workspace owns no kernel connection",
         )),
-        #[cfg(target_os = "linux")]
         Kernel::Attaching => Err(refused(
             ControlCode::Unknown,
             ADMISSION,
@@ -122,9 +116,18 @@ fn connection(kernel: &Kernel) -> Result<bool, Failure> {
         )),
         #[cfg(target_os = "linux")]
         Kernel::Ready(attached) => Ok(attached.session.abort_bound()),
+        // The WinFsp host stop is always bound as the abort control.
+        #[cfg(target_os = "windows")]
+        Kernel::Leaving(_) | Kernel::Retained(_) => Err(refused(
+            ControlCode::Busy,
+            ADMISSION,
+            "terminal unmount already admitted",
+        )),
+        #[cfg(target_os = "windows")]
+        Kernel::Ready(_) => Ok(true),
     }
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 impl Service {
     /// The same guard as on Linux; no entry here can pass it.
     pub(super) fn force_unmount(

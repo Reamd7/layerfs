@@ -19,9 +19,11 @@ pub struct KernelConfig {
     pub drain_wait: Duration,
 }
 /// Kernel serving is a Linux capability; elsewhere it cannot be constructed.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 #[derive(Debug)]
 pub enum KernelServing {}
+#[cfg(target_os = "windows")]
+pub use super::export::WinFspServing as KernelServing;
 #[cfg(target_os = "linux")]
 pub use super::serving::KernelServing;
 
@@ -29,15 +31,20 @@ pub use super::serving::KernelServing;
 pub(super) enum Kernel {
     Unattached,
     /// One Attach is admitted, or its engine outcome is unknown.
-    #[cfg(target_os = "linux")]
     Attaching,
     #[cfg(target_os = "linux")]
     Ready(Box<super::serving::Attached>),
+    #[cfg(target_os = "windows")]
+    Ready(Box<super::export::WinFspAttached>),
     /// A terminal operation owns the session; status still observes it.
     #[cfg(target_os = "linux")]
     Leaving(Box<super::serving::Leaving>),
+    #[cfg(target_os = "windows")]
+    Leaving(Box<super::export::WinFspLeaving>),
     #[cfg(target_os = "linux")]
     Retained(Box<super::serving::Kept>),
+    #[cfg(target_os = "windows")]
+    Retained(Box<super::export::WinFspKept>),
 }
 impl Kernel {
     /// Maintained observations only: no syscall, SQL job or kernel request.
@@ -50,7 +57,6 @@ impl Kernel {
         };
         match self {
             Self::Unattached => plain(MountPhase::Unattached),
-            #[cfg(target_os = "linux")]
             Self::Attaching => plain(MountPhase::Attaching),
             #[cfg(target_os = "linux")]
             Self::Ready(attached) => {
@@ -62,6 +68,13 @@ impl Kernel {
                     work: Some(super::serving::work(&facts)),
                 }
             }
+            #[cfg(target_os = "windows")]
+            Self::Ready(attached) => MountStatus {
+                phase: MountPhase::Ready,
+                ready: Some(attached.ready.clone()),
+                detached: false,
+                work: None,
+            },
             #[cfg(target_os = "linux")]
             Self::Leaving(leaving) => {
                 let facts = leaving.observer.facts();
@@ -72,6 +85,13 @@ impl Kernel {
                     work: Some(super::serving::work(&facts)),
                 }
             }
+            #[cfg(target_os = "windows")]
+            Self::Leaving(leaving) => MountStatus {
+                phase: leaving.phase,
+                ready: Some(leaving.ready.clone()),
+                detached: leaving.phase == MountPhase::Draining,
+                work: None,
+            },
             #[cfg(target_os = "linux")]
             Self::Retained(kept) => {
                 let facts = kept.observer.as_ref().map(|observer| observer.facts());
@@ -82,6 +102,13 @@ impl Kernel {
                     work: facts.as_ref().map(super::serving::work),
                 }
             }
+            #[cfg(target_os = "windows")]
+            Self::Retained(kept) => MountStatus {
+                phase: MountPhase::Retained,
+                ready: kept.ready.clone(),
+                detached: false,
+                work: None,
+            },
         }
     }
 }
