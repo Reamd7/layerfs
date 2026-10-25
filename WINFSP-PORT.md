@@ -197,7 +197,7 @@ getvolinfo(卷句柄打开)。pjdfstest 未跑(需 POSIX 环境)。
    拒);完整接通的 blocker 是 owner #352(Store 直连 Linux-only)→ Windows 走
    worker 路线(dsh/WSL2 侧设计),本仓库范围外
 6. 一致性:◐ winfsp-tests 16 族 OK(含 querydir)、失败全归因;pjdfstest 未跑
-7. 上游合规:◐ 逐 commit LOC(96,886 → 97,988,delta +1,102;口径 core/crates
+7. 上游合规:◐ 逐 commit LOC(96,886 → 98,032,delta +1,146;口径 core/crates
    src,api/binding 不在计数根)、boundary 回基线(5 个预存违规为移植提交遗留)、
    fmt/clippy 改动面干净;linux target 回归 NOT_RUN(本机无
    x86_64-unknown-linux-gnu 组件)
@@ -207,7 +207,10 @@ getvolinfo(卷句柄打开)。pjdfstest 未跑(需 POSIX 环境)。
 1. ~~大目录枚举分页~~ ✅(2026-10-25 二轮:窗口链重建 + cookie 锚定;querydir_test
    通过,回归测试 `large_directory_enumerates_completely`)
 2. **DOS 扩展属性面**:HIDDEN/SYSTEM 存储(xattr/元数据扩展)或明确文档化为不支持
-3. **standby/mmap 族崩溃归因**(EXCEPTION 0xC0000006,两处)
+3. **standby/mmap 族崩溃**(EXCEPTION 0xC0000006,两处):constrained/write-to-end 写
+   语义已实现(2026-10-25 三轮),但插桩证明崩溃发生在任何 FS 回调之前——驱动与
+   Section 的交互缺第二个映射文件的文件大小扩展(FSD 层,不在本仓回调面);
+   delete_mmap 族已通过,rdwr_noncached/flush 维持既有 KO(NO_BUFFERING 变体)
 4. **性能**:Defender 排除;file_info_timeout(1000ms)与 notify 的权衡(缓存窗口内
    属性查询可能陈旧——file_info_timeout=0 会破坏 DirInfo 缓存驱动的枚举,已回退);
    大目录重建枚举的成本(锚定链窗,100 条 ≈ 2 窗;stats 缓存兜底 LOOKUP/GETATTR)
