@@ -42,6 +42,7 @@ use winfsp::{
         DirBuffer, DirInfo, DirMarker, FileInfo, FileSecurity, FileSystemContext, OpenFileInfo,
         VolumeInfo, WideNameInfo,
     },
+    notify::{Notifier, NotifyingFileSystemContext},
     FspError, U16CStr,
 };
 
@@ -99,12 +100,36 @@ impl FileContext {
     }
 }
 
+/// One cache-invalidation event waiting for the notify timer: the WinFsp
+/// filter and action bits with the file's full path.
+#[derive(Clone, Debug)]
+struct PendingNotify {
+    filter: u32,
+    action: u32,
+    path: String,
+}
+
+/// `FILE_NOTIFY_CHANGE_*` / `FILE_ACTION_*` the WinFsp contract names.
+const CHANGE_FILE_NAME: u32 = 0x0000_0001;
+const CHANGE_ATTRIBUTES: u32 = 0x0000_0004;
+const CHANGE_SIZE: u32 = 0x0000_0008;
+const CHANGE_LAST_WRITE: u32 = 0x0000_0010;
+const ACTION_ADDED: u32 = 0x0000_0001;
+const ACTION_REMOVED: u32 = 0x0000_0002;
+const ACTION_MODIFIED: u32 = 0x0000_0003;
+const ACTION_RENAMED_OLD: u32 = 0x0000_0004;
+const ACTION_RENAMED_NEW: u32 = 0x0000_0005;
+
 /// The WinFsp-facing file system: one mounted Workspace.
 pub struct LayerFsContext {
     services: Arc<dyn MountServices>,
     queue: MountRequests,
     root: u64,
     requests: AtomicU64,
+    /// Change events the notify timer has not flushed yet; flushing them
+    /// both reports the change and invalidates the kernel's cached file
+    /// and directory information for the named path.
+    pending: Mutex<Vec<PendingNotify>>,
 }
 
 impl LayerFsContext {
@@ -114,6 +139,30 @@ impl LayerFsContext {
             queue,
             root,
             requests: AtomicU64::new(1),
+            pending: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Queues one invalidation event; the timer flushes it within its
+    /// interval. A path longer than the notify buffer is dropped: the
+    /// caches expire on their own timeout.
+    fn queue_notify(&self, filter: u32, action: u32, path: &U16CStr) {
+        const NAME_LIMIT: usize = 1024;
+        let mut text: String = path.to_string_lossy();
+        // The change report names the file relative to the mount root,
+        // while the callbacks' paths carry the leading separator.
+        while text.starts_with('\\') {
+            text.remove(0);
+        }
+        if text.len() <= NAME_LIMIT {
+            self.pending
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .push(PendingNotify {
+                    filter,
+                    action,
+                    path: text,
+                });
         }
     }
 
@@ -212,6 +261,37 @@ impl LayerFsContext {
     }
 }
 
+impl NotifyingFileSystemContext<()> for LayerFsContext {
+    fn should_notify(&self) -> Option<()> {
+        // The timer's one interval is the whole staleness window: any
+        // queued event asks for a flush, which both reports the change and
+        // invalidates the kernel's cached file and directory information.
+        (!self
+            .pending
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .is_empty())
+        .then_some(())
+    }
+
+    fn notify(&self, (): (), notifier: &Notifier) {
+        const BUFFER: usize = 1024;
+        let events: Vec<_> = std::mem::take(
+            &mut *self
+                .pending
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner()),
+        );
+        for event in events {
+            let mut info = winfsp::notify::NotifyInfo::<BUFFER>::new();
+            info.filter = event.filter;
+            info.action = event.action;
+            if info.set_name(&event.path).is_ok() {
+                notifier.notify(&info);
+            }
+        }
+    }
+}
 impl FileSystemContext for LayerFsContext {
     type FileContext = FileContext;
 
@@ -459,6 +539,7 @@ impl FileSystemContext for LayerFsContext {
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner()) = true;
         }
+        self.queue_notify(CHANGE_FILE_NAME, ACTION_ADDED, file_name);
         Ok(context)
     }
 
@@ -679,6 +760,9 @@ impl FileSystemContext for LayerFsContext {
             destination_path,
         });
         self.mutate(parent, None, input, None)?;
+        // The WinFsp contract reports a rename as an adjacent old/new pair.
+        self.queue_notify(CHANGE_FILE_NAME, ACTION_RENAMED_OLD, file_name);
+        self.queue_notify(CHANGE_FILE_NAME, ACTION_RENAMED_NEW, new_file_name);
         Ok(())
     }
 
@@ -727,6 +811,9 @@ impl FileSystemContext for LayerFsContext {
             MutationInput::Named(layerfs_workspace::Operation::Unlink { parent, name })
         };
         let _ = self.mutate(parent, None, input, None);
+        if let Some(path) = file_name {
+            self.queue_notify(CHANGE_FILE_NAME, ACTION_REMOVED, path);
+        }
     }
 
     fn flush(

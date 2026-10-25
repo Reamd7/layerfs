@@ -79,9 +79,20 @@ impl WinFspSession {
                 .unicode_on_disk(true)
                 .persistent_acls(false)
                 .filesystem_name("layerfs");
+            // The notifying host flushes queued change events every window:
+            // one report invalidates the kernel's cached directory and file
+            // information for the named path, so a fresh listing never waits
+            // out the info timeout.
             let mut host: FileSystemHost<LayerFsContext, FineGuard> =
-                FileSystemHost::new(params, context)
-                    .map_err(|error| io::Error::other(error.to_string()))?;
+                FileSystemHost::new_with_timer::<_, 16>(
+                    winfsp::host::FileSystemParams {
+                        use_dir_info_by_name: false,
+                        volume_params: params,
+                        debug_mode: winfsp::host::DebugMode::none(),
+                    },
+                    context,
+                )
+                .map_err(|error| io::Error::other(error.to_string()))?;
             host.mount(mount_point(&config.directory)?)?;
             host.start()
                 .map_err(|error| io::Error::other(error.to_string()))?;

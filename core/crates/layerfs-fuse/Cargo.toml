@@ -12,7 +12,7 @@ layerfs-workspace = { path = "../layerfs-workspace" }
 layerfs-content = { path = "../layerfs-content" }
 
 [target.'cfg(windows)'.dependencies]
-winfsp = { version = "0.13", features = ["windows-61"] }
+winfsp = { version = "0.13", features = ["windows-61", "notify"] }
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
