@@ -338,101 +338,32 @@ impl FileSystemContext for LayerFsContext {
         let handle = context
             .handle
             .ok_or_else(|| FspError::from(STATUS_INVALID_PARAMETER))?;
-        // Resume after the marker's cookie; a name we never offered is not a
-        // resumable position.
-        let offset = match marker.inner() {
-            None => 0,
-            Some(name) => context
-                .markers
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner())
-                .get(&String::from_utf16_lossy(name))
-                .copied()
-                .and_then(|cookie| cookie.checked_add(1))
-                .ok_or_else(|| FspError::from(STATUS_INVALID_PARAMETER))?,
+        // WinFsp's reader is stateless across calls: a marker names a
+        // position, and the callback must be able to serve it whatever this
+        // handle saw before. A fresh start, or a marker this context never
+        // offered (the driver may resume on a freshly opened context),
+        // rebuilds the whole listing; a known marker reads the buffer that
+        // rebuild already filled.
+        let known = match marker.inner() {
+            None => false,
+            Some(name) => {
+                let key = String::from_utf16_lossy(name);
+                context
+                    .markers
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .contains_key(&key)
+            }
         };
-        if marker.is_none() {
-            // A fresh enumeration reports current facts; cached ones may
+        if !known {
+            // A rebuilt listing reports current facts; cached ones may
             // predate mutations from other handles.
             context
                 .stats
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner())
                 .clear();
-        }
-        let services = self.request_services()?;
-        let mut stream = block_on(DirectoryStream::prepare(
-            services.clone(),
-            self.mount(),
-            self.next_request(),
-            context.serial,
-            handle,
-            offset,
-        ))
-        .map_err(|failure| internal(&failure.reason))?;
-        let lock = context.dir_buffer.acquire(marker.is_none(), None)?;
-        let mut names: Vec<(String, u64)> = Vec::new();
-        for (name, serial, cookie) in stream.dots() {
-            let mut entry: DirInfo = DirInfo::new();
-            entry.file_info_mut().file_attributes = FILE_ATTRIBUTE_DIRECTORY.0;
-            entry.file_info_mut().index_number = serial;
-            entry.set_name(name)?;
-            lock.write(&mut entry)?;
-            names.push((name.to_owned(), cookie));
-        }
-        loop {
-            match block_on(stream.next()).map_err(|failure| internal(&failure.reason))? {
-                DirectoryStep::End(_) => break,
-                DirectoryStep::Batch(batch) => {
-                    let entries: Vec<(Vec<u8>, u64)> = batch
-                        .entries()
-                        .map(|(entry, cookie)| (entry.name.clone(), cookie))
-                        .collect();
-                    let mut written = 0usize;
-                    for (name, cookie) in &entries {
-                        let serial = self.serial_of(&services, name, context.serial, handle)?;
-                        let cached = context
-                            .stats
-                            .lock()
-                            .unwrap_or_else(|poison| poison.into_inner())
-                            .get(&serial)
-                            .cloned();
-                        let stat = match cached {
-                            Some(stat) => stat,
-                            None => {
-                                let stat = self.stat_of(&services, serial)?;
-                                let mut stats = context
-                                    .stats
-                                    .lock()
-                                    .unwrap_or_else(|poison| poison.into_inner());
-                                if stats.len() > STATS_CACHE_LIMIT {
-                                    stats.clear();
-                                }
-                                stats.insert(serial, stat.clone());
-                                stat
-                            }
-                        };
-                        let mut entry: DirInfo = DirInfo::new();
-                        entry.file_info_mut().file_attributes = attributes(&stat);
-                        entry.file_info_mut().index_number = serial;
-                        let text = String::from_utf8_lossy(name).into_owned();
-                        entry.set_name(&text)?;
-                        lock.write(&mut entry)?;
-                        names.push((text, *cookie));
-                        written += 1;
-                    }
-                    stream = block_on(batch.accept(written))
-                        .map_err(|failure| internal(&failure.reason))?;
-                }
-            }
-        }
-        drop(lock);
-        let mut markers = context
-            .markers
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        for (name, cookie) in names {
-            markers.insert(name, cookie);
+            self.rebuild_listing(context, handle)?;
         }
         Ok(context.dir_buffer.read(marker, buffer))
     }
@@ -810,6 +741,97 @@ impl LayerFsContext {
 }
 
 impl LayerFsContext {
+    /// Chains the engine's bounded windows from the start into the handle's
+    /// directory buffer, until an empty window proves the directory's end.
+    fn rebuild_listing(&self, context: &FileContext, handle: u64) -> winfsp::Result<()> {
+        let services = self.request_services()?;
+        let lock = context.dir_buffer.acquire(true, None)?;
+        let mut names: Vec<(String, u64)> = Vec::new();
+        let mut resume = 0u64;
+        loop {
+            let mut stream = block_on(DirectoryStream::prepare(
+                services.clone(),
+                self.mount(),
+                self.next_request(),
+                context.serial,
+                handle,
+                resume,
+            ))
+            .map_err(|failure| internal(&failure.reason))?;
+            for (name, serial, cookie) in stream.dots() {
+                let mut entry: DirInfo = DirInfo::new();
+                entry.file_info_mut().file_attributes = FILE_ATTRIBUTE_DIRECTORY.0;
+                entry.file_info_mut().index_number = serial;
+                entry.set_name(name)?;
+                lock.write(&mut entry)?;
+                names.push((name.to_owned(), cookie));
+            }
+            let mut last_cookie = None;
+            loop {
+                match block_on(stream.next()).map_err(|failure| internal(&failure.reason))? {
+                    DirectoryStep::End(_) => break,
+                    DirectoryStep::Batch(batch) => {
+                        let entries: Vec<(Vec<u8>, u64)> = batch
+                            .entries()
+                            .map(|(entry, cookie)| (entry.name.clone(), cookie))
+                            .collect();
+                        let mut written = 0usize;
+                        for (name, cookie) in &entries {
+                            let serial = self.serial_of(&services, name, context.serial, handle)?;
+                            let cached = context
+                                .stats
+                                .lock()
+                                .unwrap_or_else(|poison| poison.into_inner())
+                                .get(&serial)
+                                .cloned();
+                            let stat = match cached {
+                                Some(stat) => stat,
+                                None => {
+                                    let stat = self.stat_of(&services, serial)?;
+                                    let mut stats = context
+                                        .stats
+                                        .lock()
+                                        .unwrap_or_else(|poison| poison.into_inner());
+                                    if stats.len() > STATS_CACHE_LIMIT {
+                                        stats.clear();
+                                    }
+                                    stats.insert(serial, stat.clone());
+                                    stat
+                                }
+                            };
+                            let mut entry: DirInfo = DirInfo::new();
+                            entry.file_info_mut().file_attributes = attributes(&stat);
+                            entry.file_info_mut().index_number = serial;
+                            let text = String::from_utf8_lossy(name).into_owned();
+                            entry.set_name(&text)?;
+                            lock.write(&mut entry)?;
+                            names.push((text, *cookie));
+                            last_cookie = Some(*cookie);
+                            written += 1;
+                        }
+                        stream = block_on(batch.accept(written))
+                            .map_err(|failure| internal(&failure.reason))?;
+                    }
+                }
+            }
+            // The next window anchors at this window's last entry: the
+            // engine's cursor rule refuses one past a published name, and
+            // the window it hands out starts after the anchor's own name.
+            match last_cookie {
+                Some(next) if next > resume => resume = next,
+                _ => break,
+            }
+        }
+        drop(lock);
+        let mut markers = context
+            .markers
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        for (name, cookie) in names {
+            markers.insert(name, cookie);
+        }
+        Ok(())
+    }
     /// Resolves a path to its parent serial and final name.
     fn resolve_parent(&self, file_name: &U16CStr) -> Result<(u64, PathName), FspError> {
         let (parent, name) = self.path_components(file_name)?;

@@ -238,6 +238,51 @@ fn killed_runner_leaves_reusable_store() {
 
 #[test]
 #[ignore = "needs WinFsp driver and built winfsp_run bin"]
+fn large_directory_enumerates_completely() {
+    let dir = fresh("paging");
+
+    // One hundred files below one directory, in one PowerShell round.
+    let ran = run(
+        &dir,
+        &[
+            "--",
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "$d = 'big'; New-Item -ItemType Directory -Path $d | Out-Null; \
+             1..100 | ForEach-Object { Set-Content -Path (Join-Path $d \"file$_\") -Value x }; \
+             Write-Host SEEDED",
+        ],
+    );
+    assert_eq!(
+        ran.code,
+        Some(0),
+        "seed a hundred files: {}{}",
+        ran.stdout,
+        ran.stderr
+    );
+    assert!(ran.stdout.contains("SEEDED"));
+
+    // The whole directory must enumerate across the engine's bounded
+    // windows: 100 files and the two dots.
+    let ran = run(
+        &dir,
+        &[
+            "--",
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "[System.IO.Directory]::EnumerateFileSystemEntries('big') | Measure-Object | \
+             Select-Object -ExpandProperty Count",
+        ],
+    );
+    assert_eq!(ran.code, Some(0), "enumerate: {}{}", ran.stdout, ran.stderr);
+    assert!(ran.stdout.contains("100"), "counted: {:?}", ran.stdout);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+#[test]
+#[ignore = "needs WinFsp driver and built winfsp_run bin"]
 fn second_runner_on_same_store_fails() {
     let dir = fresh("mutex");
 
