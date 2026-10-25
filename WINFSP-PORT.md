@@ -8,9 +8,10 @@
 LayerFS 核心闭环(挂载 → 卷内读写 → commit → 历史持久化)、daemon 控制面
 (Mount/Attach/Unmount/Force)与 **SDK Store 直连组**(owner 2026-10-25:**不走 WSL**,
 原生单内核直连)已在**原生 Windows** 真机跑通;`layerfs-winfsp` 裸跑 runner、cmd
-语义矩阵/韧性/互斥/大目录分页测试、winfsp-tests 一致性套件(**36 族单轮全绿**)与
-**Node 全链冒烟**(init → list → fork → apply → read → main 只读规则 → 重开读回)
-全部实测。剩余:DOS 扩展属性面、sandbox 组的容器架构面、overlapped 异步面。
+语义矩阵/韧性/互斥/大目录分页测试、winfsp-tests 一致性套件(**41 族单轮全绿**,含
+overlapped 异步五族)与 **Node 全链冒烟**(init → list → fork → apply → read →
+main 只读规则 → 重开读回)全部实测。剩余:DOS 扩展属性(引擎 schema 决策)、
+sandbox 组的容器架构面、性能优化(Defender 排除需管理员、notify 缓存失效为后续项)。
 
 ## 支持程度(2026-10-25 实测口径)
 
@@ -207,9 +208,9 @@ rename_flipflop(计划排除面)。pjdfstest 未跑(需 POSIX 环境)。
    branch.fork → fs.apply 提交写 → fs.read 读回 → main 按 ReadOnly 规则拒 →
    二次开合读回。sandbox/workspace/exec 组仍按 Docker 架构 Unix-only 拒(非 WSL
    因素,是产品容器架构)
-6. 一致性:◐ winfsp-tests **36 族单轮全绿**(含 standby 双族)、其余全归因;
+6. 一致性:◐ winfsp-tests **41 族单轮全绿**(36 + overlapped 五族)、其余全归因;
    pjdfstest 未跑
-7. 上游合规:◐ 逐 commit LOC(96,886 → 98,080,delta +1,194;口径 core/crates
+7. 上游合规:◐ 逐 commit LOC(96,886 → 98,083,delta +1,197;口径 core/crates
    src,api/binding 不在计数根)、boundary 回基线(5 个预存违规为移植提交遗留)、
    fmt/clippy 改动面干净;linux target 回归 NOT_RUN(本机无
    x86_64-unknown-linux-gnu 组件)
@@ -218,14 +219,23 @@ rename_flipflop(计划排除面)。pjdfstest 未跑(需 POSIX 环境)。
 
 1. ~~大目录枚举分页~~ ✅(2026-10-25 二轮:窗口链重建 + cookie 锚定;querydir_test
    通过,回归测试 `large_directory_enumerates_completely`)
-2. **DOS 扩展属性面**:HIDDEN/SYSTEM 存储(xattr/元数据扩展)或明确文档化为不支持
+2. **DOS 扩展属性面(HIDDEN/SYSTEM)**:评估结论——需要引擎 inode 存储扩展
+   (layerfs-overlay 的 Inode 列 + persistence schema + workspace 语法三层),
+   属产品 schema 决策,不在移植分支擅自扩展;当前明确**不支持**(读写往返丢失
+   这两位,ARCHIVE/READONLY 完整)。扩展路径若立项:inode 元数据加 2 位Dos
+   属性,SetBasicInfo/attributes/DirInfo 三处映射
 3. ~~standby/mmap 族崩溃~~ ✅(2026-10-25 四轮:真根因是引擎读窗口 128K——更大读
    被引擎拒,映射页读回以 0xC0000006 页错误呈现;此前"FSD↔Section 层"归因有误,
    WinFsp 驱动调试日志证实失败点在读回调自身。读回调现按 READ_WINDOW 链访,
-   delete_standby/rename_standby 通过,套件升至 36 族)
-4. **性能**:Defender 排除;file_info_timeout(1000ms)与 notify 的权衡(缓存窗口内
-   属性查询可能陈旧——file_info_timeout=0 会破坏 DirInfo 缓存驱动的枚举,已回退);
-   大目录重建枚举的成本(锚定链窗,100 条 ≈ 2 窗;stats 缓存兜底 LOOKUP/GETATTR)
+   delete_standby/rename_standby 通过)
+4. ~~overlapped 异步面~~ ✅(2026-10-26:全超尾读须答 STATUS_END_OF_FILE 而非
+   0 字节成功——memfs 契约,ERROR_HANDLE_EOF 依赖此区分;五个 *_overlapped 族
+   全过,套件升至 **41 族**)
+5. **性能**:Defender 排除需管理员(本机 shell 无权限且 MpPreference 报
+   0x800106ba——疑似第三方杀软接管;命令:`Add-MpPreference -ExclusionPath
+   '<仓库路径>'`);file_info_timeout(1000ms)与 notify 的权衡——主动失效需
+   winfsp-rs 的 notify+async-io feature 包装 NotifyingFileSystemContext(侵入
+   host 构造,记为后续项);大目录重建枚举成本已由 stats 缓存兜底
 
 ## 许可警示
 
