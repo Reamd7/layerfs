@@ -8,9 +8,9 @@
 LayerFS 核心闭环(挂载 → 卷内读写 → commit → 历史持久化)**与 daemon 控制面**
 (Mount/Attach/Unmount/Force 经 `execute_control`,WinFsp 内核半)已在**原生 Windows**
 真机跑通;`layerfs-winfsp` 裸跑 runner、cmd 语义矩阵/韧性/互斥/大目录分页测试、
-winfsp-tests 一致性套件(15 族 + querydir 共 16 族通过)与 Windows 版 Node addon
+winfsp-tests 一致性套件(**34 族单轮全绿**)与 Windows 版 Node addon
 (按 owner #352 边界应答)全部实测。剩余:DOS 扩展属性面、SDK 的 Windows worker
-路线、standby 崩溃归因。
+路线、standby/overlapped 归因。
 
 ## 支持程度(2026-10-25 实测口径)
 
@@ -164,26 +164,31 @@ Sandbox 四职能(命令隔离/scratch/环境一致/FUSE 内核边界)中只有�
 
 ## 一致性(winfsp-tests 2.1,--external --resilient,2026-10-25)
 
-驱动:`winfsp_run <dir> --idle 900` 挂活卷,`winfsp-tests-x64.exe --external
---resilient --case-insensitive-cmp`,按计划排除 stream/ea/reparse/flipflop 面。
-套件首败即停,失败项逐个归因(修复或 known)后推进。本轮修复驱动的真实缺陷:
-delete-on-close 双通道、非空目录 SetDelete、ARCHIVE/READONLY 位、SetFileAttributes
-往返、目录只读位、目录 replace 拒绝、**大目录跨窗枚举**(WinFsp 读取器无状态:新起点
-或陌生 marker 时从 offset 0 链窗重建整个列表,窗锚定在上窗最后一条的 cookie——引擎
-cursor 拒绝"已发布名的下一个"偏移;有回归测试)。
+驱动:`winfsp_run <dir> --idle 1800` 挂活卷,`winfsp-tests-x64.exe --external
+--resilient --case-insensitive-cmp`。套件首败即停,失败项逐个归因(修复或 known)后
+推进;连续多进程互踩同一 run 目录会互相污染,判定以单进程单轮为准。修复驱动的真实
+缺陷:delete-on-close 双通道、非空目录 SetDelete、ARCHIVE/READONLY 位、
+SetFileAttributes 往返、目录只读位、目录 replace 拒绝、**大目录跨窗枚举**(WinFsp
+读取器无状态:新起点或陌生 marker 时从 offset 0 链窗重建,窗锚定在上窗最后一条的
+cookie;有回归测试)、constrained/write-to-end 写语义、**卷扇区声明 512**(4096 使
+FSD 拒一切 NO_BUFFERING/WRITE_THROUGH 写,任何 FS 回调之前)。
 
-**通过(16)**:create_readonlydir、create_related、create_sd、create_backup、
-create_restore、create_share、create_curdir、delete、delete_pending、delete_mmap、
-rename、rename_backslash、rename_open、rename_caseins、rename_mmap、querydir。
+**通过(34,单轮全绿)**:create_readonlydir、create_related、create_sd、
+create_backup、create_restore、create_share、create_curdir、delete、delete_pending、
+delete_mmap、rename、rename_backslash、rename_open、rename_caseins、rename_mmap、
+setvolinfo、rdwr_noncached、rdwr_cached、rdwr_cached_append、rdwr_writethru、
+rdwr_writethru_append、rdwr_mmap、rdwr_mixed、flush、flush_volume、lock_noncached、
+lock_cached、querydir、querydir_expire_cache、querydir_buffer_overflow、dirnotify、
+exec、exec_delete、exec_rename。
 
-**known 归因(排除)**:create_test(尾随 `\` 语义:WinFsp FSD 剥除且不设目录位,
-用户态不可实现)、create_fileattr/setfileinfo(HIDDEN/SYSTEM 无存储面)、
-create_allocation(预分配需引擎面)、create_notraverse、getsecurity/setsecurity
-(ACL)、getfileinfo×2(按句柄名查询)、create_namelen、rdwr_noncached/
-noncached_overlapped/writethru 变体与 flush(NO_BUFFERING/写直通语义)、
-delete_ex/
-rename_ex(POSIX 变体)、delete_standby/rename_standby(EXCEPTION 0xC0000006 崩)、
-getvolinfo(卷句柄打开)。pjdfstest 未跑(需 POSIX 环境)。
+**known 归因(排除)**:create_test(尾随 `\` 语义:FSD 剥除且不设目录位,用户态
+不可实现)、create_fileattr/setfileinfo(HIDDEN/SYSTEM 无存储面)、create_allocation
+(预分配需引擎面)、create_notraverse、getsecurity/setsecurity(ACL)、getfileinfo×2
+(按句柄名查询)、create_namelen 与 querydir_namelen(引擎 PathName 255 边界)、
+delete_ex/rename_ex(POSIX 变体)、delete_standby/rename_standby(EXCEPTION
+0xC0000006,见剩余路线)、getvolinfo(卷句柄打开)、rdwr/lock 的 *_overlapped 变体
+(异步 IO 面)、reparse*、stream*、ea*、delete_access/getfileattr/exec_rename_dir/
+rename_flipflop(计划排除面)。pjdfstest 未跑(需 POSIX 环境)。
 
 ## 剩余路线(2026-10-25 修订)
 
@@ -196,7 +201,7 @@ getvolinfo(卷句柄打开)。pjdfstest 未跑(需 POSIX 环境)。
 5. SDK:◐ addon Windows 化完成(discovery 锁/权限、输出读位、sandbox 组 Unix-only
    拒);完整接通的 blocker 是 owner #352(Store 直连 Linux-only)→ Windows 走
    worker 路线(dsh/WSL2 侧设计),本仓库范围外
-6. 一致性:◐ winfsp-tests 16 族 OK(含 querydir)、失败全归因;pjdfstest 未跑
+6. 一致性:◐ winfsp-tests **34 族单轮全绿**、其余全归因;pjdfstest 未跑
 7. 上游合规:◐ 逐 commit LOC(96,886 → 98,032,delta +1,146;口径 core/crates
    src,api/binding 不在计数根)、boundary 回基线(5 个预存违规为移植提交遗留)、
    fmt/clippy 改动面干净;linux target 回归 NOT_RUN(本机无
