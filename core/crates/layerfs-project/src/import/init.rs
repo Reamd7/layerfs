@@ -101,7 +101,7 @@ pub fn init_observed(
     progress.tick()?;
     let source = scan::check_root(request.source)?;
     if let Some(placement) = request.acquisition.placement() {
-        super::source::outside_source(&source, &placement)?;
+        super::source::outside_source(request.source, &source, &placement)?;
     }
     let scope = scope_for_seed(request.scope_seed);
     let mut stack = [0; 16];
@@ -239,4 +239,3 @@ fn acquire<'a>(
     })?;
     Ok((root, reservation.start, scanned.entries, save))
 }
-

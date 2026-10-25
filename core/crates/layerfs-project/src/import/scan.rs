@@ -6,10 +6,12 @@
 //! it is placed, so its row is written complete. One directory stream, one
 //! fixed child buffer and one write window are resident; a directory wider than
 //! the child buffer is written unpositioned and ordered by the backing.
-use crate::import::backing::{placed_bytes, window_full, Backing, Bound, Pending, Stamp, WINDOW_ROWS};
 use crate::error::content;
 use crate::error::ProjectError as Failure;
 use crate::error::SourceRefusal;
+use crate::import::backing::{
+    placed_bytes, window_full, Backing, Bound, Pending, Stamp, WINDOW_ROWS,
+};
 
 use crate::namespace::ImportProgress;
 use layerfs_content::filesystem::attributes::PortableMetadata;
@@ -20,7 +22,6 @@ use layerfs_storage::port::acquisition::{EntryKey, NewEntry, Placed};
 use std::{
     ffi::{OsStr, OsString},
     fs::{self, Metadata},
-
     path::{Path, PathBuf},
 };
 
@@ -87,7 +88,10 @@ impl Roots<'_, '_> {
             None => crate::import::backing::os_bytes(directory.as_os_str()),
         };
         let mode = child.portable_mode().map_err(|reason| {
-            Failure::refused(reason, PathBuf::from(crate::import::backing::os_from_vec(path())))
+            Failure::refused(
+                reason,
+                PathBuf::from(crate::import::backing::os_from_vec(path())),
+            )
         })?;
         let nanos = child.stamp.mtime_nsec as u32;
         let key = (child.kind.code(), mode, child.stamp.mtime, nanos);
@@ -197,7 +201,10 @@ pub(crate) fn scan(
         for child in fs::read_dir(&path)? {
             progress.tick()?;
             let child = child?;
-            buffer.push(observe(&child.path(), &crate::import::backing::os_bytes(&child.file_name()))?);
+            buffer.push(observe(
+                &child.path(),
+                &crate::import::backing::os_bytes(&child.file_name()),
+            )?);
             count += 1;
             progress.counters.entry();
             if buffer.len() == WINDOW_ROWS {

@@ -30,8 +30,8 @@ use std::{
     time::Duration,
 };
 /// One OS-level lock turn over a discovery directory. Unix holds flock on
-/// the lock file; Windows holds an exclusive LockFileEx range, released
-/// even if its process exits.
+/// the lock file; Windows holds std's byte-range lock on it, released even
+/// if its process exits.
 #[cfg(unix)]
 mod lock {
     use std::os::fd::AsRawFd;
@@ -50,39 +50,23 @@ mod lock {
 }
 #[cfg(windows)]
 mod lock {
-    use std::os::windows::io::AsRawHandle;
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::Storage::FileSystem::{
-        LockFileEx, UnlockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
-        LOCK_FILE_FLAGS,
-    };
-    const WHOLE: u32 = u32::MAX;
+    /// Holds the OS lock by forgetting std's guard: the byte range stays
+    /// locked until the owning File closes (the Guard's drop). The direct
+    /// LockFileEx call this replaces faulted in every process shape
+    /// (verified by a standalone probe); std owns those platform details.
     pub(super) fn try_hold(file: &std::fs::File) -> bool {
-        let flags = LOCK_FILE_FLAGS(LOCKFILE_EXCLUSIVE_LOCK.0 | LOCKFILE_FAIL_IMMEDIATELY.0);
-        // Anything but a held lock is a failure the caller reports.
-        unsafe {
-            LockFileEx(
-                HANDLE(file.as_raw_handle()),
-                flags,
-                None,
-                WHOLE,
-                WHOLE,
-                std::ptr::null_mut(),
-            )
-            .is_ok()
+        match file.try_lock() {
+            Ok(held) => {
+                std::mem::forget(held);
+                true
+            }
+            Err(_) => false,
         }
     }
-    pub(super) fn release(file: &std::fs::File) {
-        let _ = unsafe {
-            UnlockFileEx(
-                HANDLE(file.as_raw_handle()),
-                Some(0),
-                WHOLE,
-                WHOLE,
-                std::ptr::null_mut(),
-            )
-        };
-    }
+    /// No explicit release: the lock ends when the Guard drops the File.
+    /// Windows has no fork to share the description, so the F-053 reason
+    /// for an explicit unlock does not apply.
+    pub(super) fn release(_file: &std::fs::File) {}
 }
 type Result<T> = std::result::Result<T, SdkRefusal>;
 

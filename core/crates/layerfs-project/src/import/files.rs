@@ -4,9 +4,9 @@
 //! fixed job queue from the backed identity stream; constructors return bounded
 //! ordered batches, and each constructed root is recorded against its identity
 //! in bounded write windows. Neither queue grows with the acquired root.
-use crate::import::backing::{Backing, Stamp, WINDOW_ROWS};
 use crate::error::ProjectError as Failure;
 use crate::error::{content, malformed, storage, SourceRefusal};
+use crate::import::backing::{Backing, Stamp, WINDOW_ROWS};
 use crate::{
     batch::{BatchProducer, Event, ImportBatch, QUEUE_SLOTS},
     import::observe::InitStep,
@@ -19,7 +19,6 @@ use layerfs_telemetry::timer::Timing;
 use std::{
     ffi::{OsStr, OsString},
     fs::{self, File},
-
     path::PathBuf,
     sync::{mpsc, Arc, Mutex},
     time::{Duration, Instant},

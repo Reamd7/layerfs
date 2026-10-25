@@ -49,12 +49,16 @@ pub(super) fn read_link(path: &Path, scanned: &Metadata) -> Result<Vec<u8>, Proj
 
 /// Refuses a backing whose files are the source or lie inside it.
 ///
-/// The placement is resolved through its links first, then each ancestor's
-/// host identity is compared with the source's, so a symlinked or otherwise
-/// aliased spelling of a directory inside the source is recognised. Nothing is
+/// The placement is resolved through its links first, then each ancestor is
+/// compared with the source's identity, so a symlinked or otherwise aliased
+/// spelling of a directory inside the source is recognised. Nothing is
 /// begun or changed: a backing inside the source would both alter the source
 /// while it is read and be acquired as part of it.
-pub(super) fn outside_source(source: &Metadata, placement: &Path) -> Result<(), ProjectError> {
+pub(super) fn outside_source(
+    source_path: &Path,
+    source: &Metadata,
+    placement: &Path,
+) -> Result<(), ProjectError> {
     let mut ancestor = fs::canonicalize(placement)?;
     loop {
         let metadata = fs::symlink_metadata(&ancestor)?;
@@ -65,17 +69,35 @@ pub(super) fn outside_source(source: &Metadata, placement: &Path) -> Result<(), 
                 return Err(ProjectError::BackingInsideSource);
             }
         }
-        // Weak Windows identity: compare the whole evidence stamp; an equal
-        // stamp is treated as aliasing and refused on the safe side.
+        // Windows: one canonicalized spelling of a directory, compared
+        // case-insensitively. Directories have no hard links here and
+        // canonicalization resolves every junction and symlink, so an equal
+        // spelling is an alias and anything else is not. The previous weak
+        // stamp comparison refused fresh sibling directories created in the
+        // same instant as the source.
         #[cfg(windows)]
         {
-            use super::backing::Stamp;
-            if Stamp::of(&metadata) == Stamp::of(source) {
+            let _ = &metadata;
+            if path_equals(&ancestor, source_path) {
                 return Err(ProjectError::BackingInsideSource);
             }
         }
         if !ancestor.pop() {
             return Ok(());
         }
+    }
+}
+
+/// Case-insensitive path equality, Windows's namespace rule.
+#[cfg(windows)]
+fn path_equals(one: &Path, other: &Path) -> bool {
+    if one.as_os_str().eq_ignore_ascii_case(other.as_os_str()) {
+        return true;
+    }
+    // Spellings that differ before canonicalization still alias when they
+    // canonicalize to one directory.
+    match (fs::canonicalize(one), fs::canonicalize(other)) {
+        (Ok(one), Ok(other)) => one.as_os_str().eq_ignore_ascii_case(other.as_os_str()),
+        _ => false,
     }
 }

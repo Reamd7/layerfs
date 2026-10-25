@@ -5,7 +5,7 @@ publish = false
 workspace = "../../core"
 edition.workspace = true
 version.workspace = true
-rust-version.workspace = true
+rust-version = "1.89"
 license.workspace = true
 
 [lib]

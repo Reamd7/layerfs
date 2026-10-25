@@ -13,10 +13,7 @@ use layerfs_storage::port::acquisition::{
     WRITE_ROW_BYTES, WRITE_WINDOW_BYTES, WRITE_WINDOW_ROWS,
 };
 use layerfs_storage::port::PersistenceError;
-use std::{
-    cell::Cell, collections::VecDeque, ffi::OsString, fs::Metadata,
-    path::PathBuf,
-};
+use std::{cell::Cell, collections::VecDeque, ffi::OsString, fs::Metadata, path::PathBuf};
 
 /// Rows the job queue or one resident child buffer may hold.
 pub(crate) const WINDOW_ROWS: usize = 512;

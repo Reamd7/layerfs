@@ -51,7 +51,6 @@ pub(crate) fn init(args: &SdkValue) -> Outcome {
                 "project.init installs the Store at the client's storePath (LAYERFS_STORE_PATH)",
             )),
         };
-    // the Store's directory is made by the install; its volume must carry the Store's locks
     let global = store_path.parent().unwrap_or(&store_path);
     layerfs_store_service::kernel_guard::check(global)
         .map_err(|reason| refused("Unsupported", reason.0))?;
