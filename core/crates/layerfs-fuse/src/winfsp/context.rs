@@ -490,14 +490,61 @@ impl FileSystemContext for LayerFsContext {
         constrained_io: bool,
         file_info: &mut FileInfo,
     ) -> winfsp::Result<u32> {
-        if write_to_eof || constrained_io {
-            return Err(FspError::from(STATUS_INVALID_DEVICE_REQUEST));
-        }
+        // A paging write out of a mapping is constrained: it may not extend
+        // the file, and what would land past the current end is dropped.
+        // A write-to-end positions at the current end instead.
+        let services = if write_to_eof || constrained_io {
+            Some(self.request_services()?)
+        } else {
+            None
+        };
+        let current = match &services {
+            Some(services) => Some(
+                self.read_visit(
+                    services,
+                    self.mount(),
+                    context.serial,
+                    KernelReadOperation::Getattr {
+                        serial: context.serial,
+                    },
+                )?
+                .ok_or_else(|| FspError::from(STATUS_OBJECT_NAME_NOT_FOUND))?
+                .stat
+                .logical_len,
+            ),
+            None => None,
+        };
+        let mut position = match (write_to_eof, current) {
+            (true, Some(end)) => end,
+            _ => offset,
+        };
+        let limit = match (constrained_io, current) {
+            (true, Some(end)) => Some(end),
+            _ => None,
+        };
         // One mutation per WRITE_WINDOW, exactly as the FUSE path batches.
-        let mut position = offset;
         let mut written = 0u32;
         let mut last: Option<ViewStat> = None;
-        for window in buffer.chunks(WRITE_WINDOW) {
+        'windows: for window in buffer.chunks(WRITE_WINDOW) {
+            if let Some(limit) = limit {
+                if position >= limit {
+                    break 'windows;
+                }
+                if position + window.len() as u64 > limit {
+                    let room = (limit - position) as usize;
+                    let window = &window[..room];
+                    let input = MutationInput::Write {
+                        offset: position,
+                        data: window.to_vec().into(),
+                        cached: false,
+                    };
+                    let mutated = self.mutate(context.serial, context.handle, input, None)?;
+                    position += room as u64;
+                    written += room as u32;
+                    last = mutated.stat.or(last);
+                    break 'windows;
+                }
+            }
             let input = MutationInput::Write {
                 offset: position,
                 data: window.to_vec().into(),
