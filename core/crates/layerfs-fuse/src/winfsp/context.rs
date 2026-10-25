@@ -26,7 +26,7 @@ use std::{
 };
 use windows::Win32::{
     Foundation::{
-        STATUS_ACCESS_DENIED, STATUS_DIRECTORY_NOT_EMPTY, STATUS_DISK_FULL,
+        STATUS_ACCESS_DENIED, STATUS_DIRECTORY_NOT_EMPTY, STATUS_DISK_FULL, STATUS_END_OF_FILE,
         STATUS_FILE_IS_A_DIRECTORY, STATUS_FILE_TOO_LARGE, STATUS_INTERNAL_ERROR,
         STATUS_INVALID_DEVICE_REQUEST, STATUS_INVALID_PARAMETER, STATUS_NOT_A_DIRECTORY,
         STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_INVALID, STATUS_OBJECT_NAME_NOT_FOUND,
@@ -343,6 +343,12 @@ impl FileSystemContext for LayerFsContext {
             if copied < span {
                 break;
             }
+        }
+        // A read entirely past the end is the end-of-file answer, not a
+        // zero-byte success (memfs' contract; ERROR_HANDLE_EOF depends on
+        // it). A short fill is a truncated success.
+        if filled == 0 && !buffer.is_empty() {
+            return Err(FspError::from(STATUS_END_OF_FILE));
         }
         Ok(filled as u32)
     }
