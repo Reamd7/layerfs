@@ -5,12 +5,12 @@
 
 ## 一句话状态
 
-LayerFS 核心闭环(挂载 → 卷内读写 → commit → 历史持久化)**与 daemon 控制面**
-(Mount/Attach/Unmount/Force 经 `execute_control`,WinFsp 内核半)已在**原生 Windows**
-真机跑通;`layerfs-winfsp` 裸跑 runner、cmd 语义矩阵/韧性/互斥/大目录分页测试、
-winfsp-tests 一致性套件(**36 族单轮全绿**,含 standby 双族)与 Windows 版 Node
-addon(按 owner #352 边界应答)全部实测。剩余:DOS 扩展属性面、SDK 的 Windows
-worker 路线、overlapped 异步面。
+LayerFS 核心闭环(挂载 → 卷内读写 → commit → 历史持久化)、daemon 控制面
+(Mount/Attach/Unmount/Force)与 **SDK Store 直连组**(owner 2026-10-25:**不走 WSL**,
+原生单内核直连)已在**原生 Windows** 真机跑通;`layerfs-winfsp` 裸跑 runner、cmd
+语义矩阵/韧性/互斥/大目录分页测试、winfsp-tests 一致性套件(**36 族单轮全绿**)与
+**Node 全链冒烟**(init → list → fork → apply → read → main 只读规则 → 重开读回)
+全部实测。剩余:DOS 扩展属性面、sandbox 组的容器架构面、overlapped 异步面。
 
 ## 支持程度(2026-10-25 实测口径)
 
@@ -198,12 +198,18 @@ rename_flipflop(计划排除面)。pjdfstest 未跑(需 POSIX 环境)。
 2. ~~Windows 名字规则~~ ✅(冒号流名/保留名/尾点空格;winfsp-tests 验证)
 3. ~~readdir N+1~~ ✅(per-handle stats 缓存,10k 上界;整窗 GETATTR 消除)
 4. ~~测试方法论~~ ✅(cmd 语义矩阵 12 步 + 杀 runner 韧性 + 单写者互斥 + 控制面循环)
-5. SDK:◐ addon Windows 化完成(discovery 锁/权限、输出读位、sandbox 组 Unix-only
-   拒);完整接通的 blocker 是 owner #352(Store 直连 Linux-only)→ Windows 走
-   worker 路线(dsh/WSL2 侧设计),本仓库范围外
+5. SDK:◐→✅(Store 直连面)owner 2026-10-25 修订:**不走 WSL,原生单内核直连**——
+   kernel_guard 的 Windows 分支放行(单内核 + SQLite 自身 NTFS 锁协调,写者入场
+   依赖同锁,与 Darwin 同理);binding 发现锁改 std 字节范围锁(直调 LockFileEx
+   在任何进程形态下崩,独立探针证实);project Init 的 backing-inside-source 检查
+   在 Windows 改用规范化路径大小写不敏感判等(原弱戳比较会把同一瞬间新建的兄弟
+   目录误判为别名)。**Node 全链冒烟真通**:init 建真 Store → fs.list →
+   branch.fork → fs.apply 提交写 → fs.read 读回 → main 按 ReadOnly 规则拒 →
+   二次开合读回。sandbox/workspace/exec 组仍按 Docker 架构 Unix-only 拒(非 WSL
+   因素,是产品容器架构)
 6. 一致性:◐ winfsp-tests **36 族单轮全绿**(含 standby 双族)、其余全归因;
    pjdfstest 未跑
-7. 上游合规:◐ 逐 commit LOC(96,886 → 98,047,delta +1,161;口径 core/crates
+7. 上游合规:◐ 逐 commit LOC(96,886 → 98,080,delta +1,194;口径 core/crates
    src,api/binding 不在计数根)、boundary 回基线(5 个预存违规为移植提交遗留)、
    fmt/clippy 改动面干净;linux target 回归 NOT_RUN(本机无
    x86_64-unknown-linux-gnu 组件)
