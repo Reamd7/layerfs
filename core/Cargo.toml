@@ -23,7 +23,8 @@ members = [
     "crates/layerfs-bridge",
     "crates/layerfs-sandbox",
     "crates/layerfs-fuse",
-    # Node binding of the JavaScript SDK (owner-approved napi-rs, 2026-10-15).
+    # Bare-run WinFsp runner: the Windows application composition entry.
+    "crates/layerfs-winfsp",
     "../api/binding",
 ]
 exclude = [

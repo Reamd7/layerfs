@@ -60,6 +60,10 @@ ALLOWED_DEPENDENCIES = {
     # provider-independent daemon store/ subtree has a narrower source boundary.
     "layerfs-daemon": {"layerfs-overlay", "layerfs-workspace", "layerfs-store-service", "layerfs-fuse", "layerfs-bridge", "layerfs-content", "layerfs-storage", "layerfs-history", "layerfs-persistence", "layerfs-telemetry"},
     "layerfs-api": {"layerfs-content", "layerfs-storage", "layerfs-history", "layerfs-persistence", "layerfs-telemetry", "layerfs-bridge", "layerfs-project", "layerfs-sandbox", "layerfs-store-service"},
+    # The bare-run WinFsp runner is an application composition entry (the
+    # role `layerfs-api` has for the SDK): it builds a first-run Store
+    # through project Init and mounts Workspaces over the WinFsp backend.
+    "layerfs-winfsp": {"layerfs-project", "layerfs-fuse", "layerfs-daemon", "layerfs-store-service", "layerfs-overlay", "layerfs-workspace", "layerfs-bridge", "layerfs-content", "layerfs-storage", "layerfs-history", "layerfs-persistence", "layerfs-telemetry"},
     "layerfs-bridge": {"layerfs-content", "layerfs-history"},
     "layerfs-sandbox": set(),
 }

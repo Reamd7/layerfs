@@ -598,7 +598,6 @@ dependencies = [
  "layerfs-history",
  "layerfs-overlay",
  "layerfs-persistence",
- "layerfs-project",
  "layerfs-storage",
  "layerfs-store-service",
  "layerfs-telemetry",
@@ -643,6 +642,7 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
+ "windows",
 ]
 
 [[package]]
@@ -718,6 +718,24 @@ version = "1.1.0"
 dependencies = [
  "libproc",
  "nix",
+]
+
+[[package]]
+name = "layerfs-winfsp"
+version = "1.1.0"
+dependencies = [
+ "layerfs-bridge",
+ "layerfs-content",
+ "layerfs-daemon",
+ "layerfs-fuse",
+ "layerfs-history",
+ "layerfs-overlay",
+ "layerfs-persistence",
+ "layerfs-project",
+ "layerfs-storage",
+ "layerfs-store-service",
+ "layerfs-telemetry",
+ "layerfs-workspace",
 ]
 
 [[package]]
