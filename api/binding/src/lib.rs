@@ -1,16 +1,23 @@
 //! Node entry points for the public SDK and its backend table (#428).
+//! The Docker Sandbox half (sandbox, workspace, exec, pool) exists only on
+//! Unix: its Engine transport has no Windows port, so those methods refuse
+//! there and the project/branch/fs groups carry the addon.
 mod convert;
 mod direct;
 mod discovery;
 mod dispatch;
+#[cfg(unix)]
 mod exec;
 mod job;
 mod output;
+#[cfg(unix)]
 mod pool;
 mod project;
 mod registry;
+#[cfg(unix)]
 mod sandbox;
 mod trace;
+#[cfg(unix)]
 mod workspace;
 
 use job::Job;

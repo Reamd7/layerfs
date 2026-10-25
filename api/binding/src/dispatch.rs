@@ -3,7 +3,9 @@
 //! backend table (`backendCall`: `backend.store.*`, `backend.daemon.*` and the
 //! runtime's `runtime.*` reads and actions).
 use crate::job::{refused, Job, Outcome};
-use crate::{convert, direct, exec, job, output, project, registry, workspace};
+use crate::{convert, direct, job, output, project, registry};
+#[cfg(unix)]
+use crate::{exec, workspace};
 use layerfs_bridge::control::SdkValue;
 use napi::{bindgen_prelude::AsyncTask, JsUnknown};
 
@@ -30,19 +32,44 @@ fn dispatch(op: &str, args: SdkValue) -> Outcome {
     }
     match op {
         "project.init" => project::init(&args),
+        #[cfg(unix)]
         "project.list_sandboxes" => workspace::sandboxes(&args),
+        #[cfg(unix)]
         "sandbox.list_workspaces" => listed(daemon_backend(op, args)?),
+        #[cfg(unix)]
         "sandbox.create" => crate::sandbox::create(&args),
+        #[cfg(unix)]
         "sandbox.close" => crate::sandbox::close(&args),
+        #[cfg(unix)]
         "workspace.mount" => workspace::mount(&args),
+        #[cfg(unix)]
         "workspace.commit" => workspace::commit(&args),
+        #[cfg(unix)]
         "workspace.unmount" => workspace::unmount(&args),
+        #[cfg(unix)]
         "workspace.exec" if args.get_bool("background") => Err(refused(
             "InvalidInput",
             "background launch is backend.daemon.process.start",
         )),
+        #[cfg(unix)]
         "workspace.exec" => exec::exec(&args),
+        #[cfg(unix)]
         "workspace.exec_release" => output::release(&args),
+        // The Docker Sandbox half exists only on Unix; its Engine transport
+        // has no Windows port (WINFSP-PORT.md).
+        #[cfg(not(unix))]
+        "project.list_sandboxes"
+        | "sandbox.list_workspaces"
+        | "sandbox.create"
+        | "sandbox.close"
+        | "workspace.mount"
+        | "workspace.commit"
+        | "workspace.unmount"
+        | "workspace.exec"
+        | "workspace.exec_release" => Err(refused(
+            "Unimplemented",
+            format!("{op} needs the Docker Sandbox, which exists only on Unix"),
+        )),
         _ if op.starts_with("backend.") || op.starts_with("runtime.") => Err(refused(
             "UnknownMethod",
             "backend and runtime methods require backendCall",
@@ -55,6 +82,7 @@ fn dispatch(op: &str, args: SdkValue) -> Outcome {
 
 /// `sandbox.list_workspaces`: the daemon's read model without its history
 /// half, `{ kind, version, workspaces }`; the SDK pages and shapes them.
+#[cfg(unix)]
 fn listed(answer: SdkValue) -> Outcome {
     let SdkValue::Map(fields) = answer else {
         return Err(refused(
@@ -73,6 +101,7 @@ fn listed(answer: SdkValue) -> Outcome {
 /// A daemon backend call through the named Sandbox of the project: its
 /// Workspaces and the read model that lists them. `deploy` only selects how this process dials
 /// the daemon, so it is not sent on.
+#[cfg(unix)]
 fn daemon_backend(op: &str, args: SdkValue) -> Outcome {
     let state = registry::sandbox_live(&args)?;
     let args = match args {
@@ -119,12 +148,18 @@ pub(crate) fn backend_call(op: String, args: JsUnknown) -> napi::Result<AsyncTas
     let scope = crate::trace::take_scope(&mut args);
     Ok(AsyncTask::new(
         Job::new(move || match op.as_str() {
+            #[cfg(unix)]
             "backend.daemon.workspace.status" => workspace::status(&args),
+            #[cfg(unix)]
             "backend.daemon.process.start" => exec::exec(&args),
+            #[cfg(unix)]
             "backend.daemon.process.list" => exec::processes(&args),
+            #[cfg(unix)]
             "backend.daemon.process.cancel" => exec::cancel(&args),
             "runtime.project.get_init" => crate::project::progress(&args),
+            #[cfg(unix)]
             "runtime.sandbox.reclaim" => workspace::reclaim(&args),
+            #[cfg(unix)]
             "backend.daemon.sandbox.get_log" => crate::sandbox::get_log(&args),
             "backend.store.project.get_history"
             | "backend.store.project.get_storage"
@@ -132,9 +167,22 @@ pub(crate) fn backend_call(op: String, args: JsUnknown) -> napi::Result<AsyncTas
             | "backend.store.branch.list_commit_storage"
             | "backend.store.fs.get_storage"
             | "backend.store.fs.list_revisions" => direct::call(&op, args, true),
+            #[cfg(unix)]
             "backend.daemon.workspace.get_storage" | "backend.daemon.workspace.list_changes" => {
                 daemon_backend(&op, args)
             }
+            #[cfg(not(unix))]
+            "backend.daemon.workspace.status"
+            | "backend.daemon.process.start"
+            | "backend.daemon.process.list"
+            | "backend.daemon.process.cancel"
+            | "runtime.sandbox.reclaim"
+            | "backend.daemon.sandbox.get_log"
+            | "backend.daemon.workspace.get_storage"
+            | "backend.daemon.workspace.list_changes" => Err(refused(
+                "Unimplemented",
+                format!("{op} needs the Docker Sandbox, which exists only on Unix"),
+            )),
             _ => Err(refused(
                 "UnknownMethod",
                 format!("no backend operation {op}"),

@@ -65,11 +65,17 @@ pub(crate) fn init(args: &SdkValue) -> Outcome {
             failed(error)
         }
     })?;
-    std::fs::set_permissions(&directory, {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::Permissions::from_mode(0o700)
-    })
-    .map_err(failed)?;
+    {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+                .map_err(failed)?;
+        }
+        // Windows has no mode: the private home's inherited ACLs hold.
+        #[cfg(windows)]
+        let _ = &directory;
+    }
     let _guard = crate::discovery::guard(&directory)?;
     let history = |text: &str| HistoryName::new(text).map_err(failed);
     let request = InitRequest {

@@ -1,36 +1,89 @@
 //! Private, permission-authorized project and Sandbox discovery. No mutation replay.
+#[cfg(unix)]
+use crate::registry::{Mount, Process, SandboxState};
 use crate::{
     job::{failed, refused},
-    registry::{self, Mount, Process, Project, SandboxState},
+    registry::{self, Project},
 };
+#[cfg(unix)]
 use layerfs_api::{internal::workspace, BoundWorkspace, MountedWorkspace};
 use layerfs_bridge::{
     control::{Reply, SdkRefusal, SdkValue},
     provision::StoreManifest,
 };
 use layerfs_persistence::{SealedStore, SqlitePersistenceProfile};
+#[cfg(unix)]
 use layerfs_sandbox::{
     backend::docker::{Docker, Sandbox, SandboxRequest},
     CommandIdentity, ContainerId,
 };
+#[cfg(unix)]
+use std::os::unix::{
+    fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
+    io::AsRawFd,
+};
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
-    os::unix::{
-        fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
-        io::AsRawFd,
-    },
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
-extern "C" {
-    fn geteuid() -> u32;
-    fn flock(fd: i32, operation: i32) -> i32;
+/// One OS-level lock turn over a discovery directory. Unix holds flock on
+/// the lock file; Windows holds an exclusive LockFileEx range, released
+/// even if its process exits.
+#[cfg(unix)]
+mod lock {
+    use std::os::fd::AsRawFd;
+    extern "C" {
+        fn flock(fd: i32, operation: i32) -> i32;
+    }
+    const EX: i32 = 2;
+    const NB: i32 = 4;
+    const UN: i32 = 8;
+    pub(super) fn try_hold(file: &std::fs::File) -> bool {
+        unsafe { flock(file.as_raw_fd(), EX | NB) == 0 }
+    }
+    pub(super) fn release(file: &std::fs::File) {
+        unsafe { flock(file.as_raw_fd(), UN) };
+    }
 }
-const LOCK_EX: i32 = 2;
-const LOCK_NB: i32 = 4;
-const LOCK_UN: i32 = 8;
+#[cfg(windows)]
+mod lock {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        LockFileEx, UnlockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+        LOCK_FILE_FLAGS,
+    };
+    const WHOLE: u32 = u32::MAX;
+    pub(super) fn try_hold(file: &std::fs::File) -> bool {
+        let flags = LOCK_FILE_FLAGS(LOCKFILE_EXCLUSIVE_LOCK.0 | LOCKFILE_FAIL_IMMEDIATELY.0);
+        // Anything but a held lock is a failure the caller reports.
+        unsafe {
+            LockFileEx(
+                HANDLE(file.as_raw_handle()),
+                flags,
+                None,
+                WHOLE,
+                WHOLE,
+                std::ptr::null_mut(),
+            )
+            .is_ok()
+        }
+    }
+    pub(super) fn release(file: &std::fs::File) {
+        let _ = unsafe {
+            UnlockFileEx(
+                HANDLE(file.as_raw_handle()),
+                Some(0),
+                WHOLE,
+                WHOLE,
+                std::ptr::null_mut(),
+            )
+        };
+    }
+}
 type Result<T> = std::result::Result<T, SdkRefusal>;
 
 pub(crate) fn home(args: &SdkValue) -> Result<PathBuf> {
@@ -45,14 +98,20 @@ pub(crate) fn home(args: &SdkValue) -> Result<PathBuf> {
     directory(&home)?;
     Ok(home)
 }
+#[cfg(unix)]
+extern "C" {
+    fn geteuid() -> u32;
+}
 fn private(path: &Path, dir: bool) -> Result<()> {
     let meta = fs::symlink_metadata(path).map_err(failed)?;
-    if meta.file_type().is_symlink()
-        || meta.is_dir() != dir
-        || (!dir && !meta.is_file())
-        || meta.uid() != unsafe { geteuid() }
-        || meta.mode() & 0o077 != 0
-    {
+    let shape = meta.file_type().is_symlink() || meta.is_dir() != dir || (!dir && !meta.is_file());
+    #[cfg(unix)]
+    let restricted = shape || meta.uid() != unsafe { geteuid() } || meta.mode() & 0o077 != 0;
+    // Windows has no uid/mode: the private tree's inherited ACLs are the
+    // protection, the same rule the daemon's own config reads apply.
+    #[cfg(windows)]
+    let restricted = shape;
+    if restricted {
         return Err(refused(
             "Unauthorized",
             format!("{} must be owned by this user and private", path.display()),
@@ -60,8 +119,15 @@ fn private(path: &Path, dir: bool) -> Result<()> {
     }
     Ok(())
 }
+/// One private directory, 0700 where the platform has the mode.
+fn private_dir(path: &Path) -> std::io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    builder.mode(0o700);
+    builder.create(path)
+}
 pub(crate) fn directory(path: &Path) -> Result<()> {
-    match fs::DirBuilder::new().mode(0o700).create(path) {
+    match private_dir(path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(e) => return Err(failed(e)),
@@ -110,10 +176,7 @@ pub(crate) fn claim_next(args: &SdkValue) -> Result<(String, PathBuf)> {
         .find(|n| !root.join(n.to_string()).exists())
         .ok_or_else(|| refused("Capacity", "the project has 9999 Sandboxes"))?;
     let path = root.join(n.to_string());
-    fs::DirBuilder::new()
-        .mode(0o700)
-        .create(&path)
-        .map_err(failed)?;
+    private_dir(&path).map_err(failed)?;
     private(&path, true)?;
     Ok((n.to_string(), path))
 }
@@ -142,10 +205,11 @@ pub(crate) struct Guard {
 }
 impl Drop for Guard {
     fn drop(&mut self) {
-        // The lock belongs to the open file description, which a child forked
-        // meanwhile shares until its exec: closing only this descriptor would
-        // leave it held (F-053). Unlock explicitly; the close follows.
-        unsafe { flock(self.file.as_raw_fd(), LOCK_UN) };
+        // The lock belongs to the open file description, which a child
+        // forked meanwhile shares until its exec: closing only this
+        // descriptor would leave it held (F-053). Unlock explicitly; the
+        // close follows.
+        lock::release(&self.file);
         let mut held = HELD.lock().unwrap_or_else(|error| error.into_inner());
         held.remove(&self.directory);
         FREED.notify_all();
@@ -190,16 +254,13 @@ pub(crate) fn guard(directory: &Path) -> Result<Guard> {
 /// process exits.
 fn os_lock(directory: &Path, deadline: std::time::Instant) -> Result<File> {
     let path = directory.join("ownership.lock");
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .mode(0o600)
-        .custom_flags(no_follow())
-        .open(&path)
-        .map_err(failed)?;
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    options.mode(0o600).custom_flags(no_follow());
+    let file = options.open(&path).map_err(failed)?;
     private(&path, false)?;
-    while unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) } != 0 {
+    while !lock::try_hold(&file) {
         if std::time::Instant::now() >= deadline {
             return Err(refused(
                 "Busy",
@@ -218,7 +279,11 @@ fn no_follow() -> i32 {
 fn no_follow() -> i32 {
     0x20000
 }
-
+#[cfg(windows)]
+fn no_follow() -> i32 {
+    // No std-level O_NOFOLLOW exists here; the private tree's ACLs hold.
+    0
+}
 pub(crate) fn save(path: &Path, value: SdkValue) -> Result<()> {
     let bytes = layerfs_bridge::control::Answer {
         id: 1,
@@ -231,36 +296,32 @@ pub(crate) fn save(path: &Path, value: SdkValue) -> Result<()> {
         std::process::id(),
         layerfs_bridge::sdk_values::hex(&registry::random()?[..8])
     ));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(no_follow())
-        .open(&temp)
-        .map_err(failed)?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600).custom_flags(no_follow());
+    let mut file = options.open(&temp).map_err(failed)?;
     file.write_all(&bytes).map_err(failed)?;
     drop(file);
     fs::rename(temp, path).map_err(failed)
 }
 /// A small private text file, written once (0600, not a symlink).
 pub(crate) fn save_text(path: &Path, text: &str) -> Result<()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(no_follow())
-        .open(path)
-        .map_err(failed)?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600).custom_flags(no_follow());
+    let mut file = options.open(path).map_err(failed)?;
     file.write_all(format!("{text}\n").as_bytes())
         .map_err(failed)
 }
 pub(crate) fn load(path: &Path) -> Result<SdkValue> {
     private(path, false)?;
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(no_follow())
-        .open(path)
-        .map_err(failed)?;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(no_follow());
+    let file = options.open(path).map_err(failed)?;
     if file.metadata().map_err(failed)?.len() > 65535 {
         return Err(refused("InvalidInput", "discovery record too large"));
     }
@@ -328,6 +389,7 @@ pub(crate) fn project(args: &SdkValue) -> Result<Project> {
         installed,
     })
 }
+#[cfg(unix)]
 pub(crate) fn save_sandbox(
     directory: &Path,
     state: &SandboxState,
@@ -378,6 +440,7 @@ pub(crate) fn save_sandbox(
 /// container, or has it stopped (it closed when idle, or Docker restarted),
 /// which lost its daemon and every mount in it. Only its records, and a
 /// stopped container, hold its number; the next mount reclaims them.
+#[cfg(unix)]
 pub(crate) fn gone(id: &str, container: &str, stopped: bool) -> SdkRefusal {
     let state = if stopped { "stopped" } else { "gone" };
     SdkRefusal {
@@ -394,6 +457,7 @@ pub(crate) fn gone(id: &str, container: &str, stopped: bool) -> SdkRefusal {
     }
 }
 /// The container of a refusal from [`gone`], and whether the Engine still has it stopped.
+#[cfg(unix)]
 pub(crate) fn gone_container(refusal: &SdkRefusal) -> Option<(&str, bool)> {
     match refusal.detail.get("containerGone") {
         Some(SdkValue::Bool(true)) if refusal.code == "NoSuchSandbox" => Some((
@@ -407,6 +471,7 @@ pub(crate) fn gone_container(refusal: &SdkRefusal) -> Option<(&str, bool)> {
     }
 }
 /// The Engine, container and deployment a Sandbox record names.
+#[cfg(unix)]
 pub(crate) fn runtime(value: &SdkValue) -> Result<(Docker, ContainerId, SandboxRequest)> {
     let docker =
         Docker::new(registry::text(value, "docker")?, Duration::from_secs(30)).map_err(failed)?;
@@ -431,6 +496,7 @@ pub(crate) fn runtime(value: &SdkValue) -> Result<(Docker, ContainerId, SandboxR
     let container = ContainerId::parse(registry::text(value, "container")?).map_err(failed)?;
     Ok((docker, container, request))
 }
+#[cfg(unix)]
 pub(crate) fn reopen(args: &SdkValue) -> Result<Arc<SandboxState>> {
     let id = registry::text(args, "sandbox")?;
     let directory = sandbox_dir(args, id)?;
@@ -479,6 +545,7 @@ pub(crate) fn reopen(args: &SdkValue) -> Result<Arc<SandboxState>> {
     Ok(state)
 }
 /// Refresh shared executor/mount metadata without repeating an operation.
+#[cfg(unix)]
 pub(crate) fn refresh(state: &SandboxState) -> Result<()> {
     let mut mounts = std::collections::BTreeMap::new();
     let mut processes = std::collections::BTreeMap::new();
@@ -552,6 +619,7 @@ pub(crate) fn refresh(state: &SandboxState) -> Result<()> {
 }
 /// A listed record, or `None` when its owner removed it after the listing:
 /// concurrent calls of this process unmount and refresh at once (#352 F-017).
+#[cfg(unix)]
 fn present(path: &Path) -> Result<Option<SdkValue>> {
     match load(path) {
         Ok(value) => Ok(Some(value)),
@@ -559,10 +627,12 @@ fn present(path: &Path) -> Result<Option<SdkValue>> {
         Err(refusal) => Err(refusal),
     }
 }
+#[cfg(unix)]
 fn absent(failure: &layerfs_api::OperationFailure) -> bool {
     matches!(&failure.cause, layerfs_api::OperationCause::Remote(refusal)
         if refusal.code == layerfs_bridge::control::ControlCode::Missing)
 }
+#[cfg(unix)]
 pub(crate) fn workspace_file(
     state: &SandboxState,
     token: layerfs_bridge::control::WorkspaceToken,
@@ -572,6 +642,7 @@ pub(crate) fn workspace_file(
         layerfs_bridge::sdk_values::hex(&token.workspace.to_bytes())
     ))
 }
+#[cfg(unix)]
 pub(crate) fn save_workspace(
     state: &SandboxState,
     mount: &MountedWorkspace,
@@ -590,6 +661,7 @@ pub(crate) fn save_workspace(
         ]),
     )
 }
+#[cfg(unix)]
 pub(crate) fn save_process(state: &SandboxState, id: &str, p: &Process) -> Result<()> {
     save(
         &state.directory.join(format!("process-{id}.record")),

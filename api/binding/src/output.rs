@@ -16,6 +16,7 @@ use napi::bindgen_prelude::Buffer;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -56,12 +57,11 @@ impl Spool {
                     [..12]
             )
         ));
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&name)?;
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let file = options.open(&name)?;
         // Unlinked at once: the open file is the only name, and closing it
         // (or the process ending) frees its space.
         std::fs::remove_file(&name)?;
@@ -183,8 +183,7 @@ pub(crate) fn page(args: &SdkValue, mut page: Buffer) -> Outcome {
     let length = page
         .len()
         .min(usize::try_from(size - offset).unwrap_or(usize::MAX));
-    file.read_exact_at(&mut page[..length], offset)
-        .map_err(failed)?;
+    read_exact_at(&file, &mut page[..length], offset).map_err(failed)?;
     let end = offset + length as u64 == size;
     Ok(SdkValue::map([
         ("kind", SdkValue::text("ok")),
@@ -201,4 +200,29 @@ pub(crate) fn release(args: &SdkValue) -> Outcome {
         ("kind", SdkValue::text("ok")),
         ("released", SdkValue::Bool(released)),
     ]))
+}
+
+/// Positional read both platforms spell differently.
+fn read_exact_at(file: &Arc<File>, out: &mut [u8], offset: u64) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        file.read_exact_at(out, offset)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt;
+        let mut done = 0usize;
+        while done < out.len() {
+            let read = file.seek_read(&mut out[done..], offset + done as u64)?;
+            if read == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "spooled stream ended early",
+                ));
+            }
+            done += read;
+        }
+        Ok(())
+    }
 }
