@@ -6,7 +6,7 @@
 
 The JavaScript SDK has 27 positional methods in four groups (29 before #373
 replaced the `sandbox` group with `workspace`; see the #373 update below). The
-[SDK guide](../../../api/how-to-use/agent.md) lists signatures, environment configuration,
+[SDK guide](../../../api/docs/agent.md) lists signatures, environment configuration,
 read/page limits and compatibility. [SPEC](../issues/327/SPEC.md) describes the
 UI/server integration; [VERIFICATION](../issues/327/VERIFICATION.md) owns acceptance.
 No harness, agent/call metadata, remove alias or public inspect is retained.
@@ -88,8 +88,11 @@ Immutable reads use 1-based inclusive lines, at most 2,000 lines/48 KiB reply
 payload. Huge-line UTF-8 prefixes, omitted remainder and nextLine are explicit;
 there is no byte-read method. Grep streams literal matching. Blame follows
 immutable first parents without retaining the entire chain, skips unchanged
-content IDs and uses bounded LCS with exact common edges. Oversized changed
-middles are removed/added blocks with comparisonCoarse. Diff hunks may be omitted
+content IDs and uses bounded LCS with exact common edges. In coarse comparisons,
+a line is inherited from the common suffix only when it starts at a
+corresponding line boundary in both versions, and from the common prefix only
+when it ends at one in both. Oversized changed middles are
+removed/added blocks with comparisonCoarse. Diff hunks may be omitted
 explicitly under comparison/reply bounds; equality uses immutable identity.
 
 Commit-v3 includes the message and operation/origin/displacement metadata in
@@ -255,7 +258,7 @@ a process id names its Sandbox. The native ops are `workspace.*`,
 control records and its timing names (`sandbox.mount.bind`,
 `sandbox.mount.attach`) are unchanged. Design and owner decisions:
 [#373](../issues/373/README.md); placement and idle close are described in the
-[SDK guide](../../../api/how-to-use/agent.md#sandboxes-and-workspaces).
+[SDK guide](../../../api/docs/agent.md#sandboxes-and-workspaces).
 
 
 ## Issue #428 source update (2026-10-23): backend names and packages
@@ -271,7 +274,7 @@ over the reclaim `operator.sandbox.list` did; `project.list_sandboxes` now
 only lists. `@layerfs/agent` exports `RENAMED_METHODS` for reading older
 traces. The Rust module paths (`operator/`) keep their names.
 
-The JavaScript is split into `api/agent/sdk` (`LayerFS`),
+The JavaScript is split into `api/agent` (`LayerFS`),
 `api/backend` (`LayerFSBackend.of(shop)`, one file per method)
 and `api/runtime` (`LayerFSRuntime.open`, on a LayerFS home).
 `@layerfs/sdk/operator` and its `inspect.snapshot` are gone; the snapshot is
@@ -285,4 +288,22 @@ New calls: `sandbox.create`, `sandbox.close` and
 mounting into a chosen Sandbox (agent), and
 `backend.daemon.sandbox.get_log`, which reads a Sandbox's daemon log once
 through the Engine where the binding runs. See the
-[backend guide](../../../api/how-to-use/backend.md#a-sandboxs-log).
+[backend guide](../../../api/docs/backend.md#a-sandboxs-log).
+
+## Project Store composition (#463)
+
+Store Init, sealing and bounded authenticated installation live in
+[`layerfs-project::store`](../../../engine/crates/layerfs-project/src/store/mod.rs).
+The existing namespace constructor remains `layerfs_project::init_observed`;
+[`store/init.rs`](../../../engine/crates/layerfs-project/src/store/init.rs) composes it
+with Persistence creation, the first Branch, Init statistics and sole-owner
+seal. It requires Disposable explicitly and preserves original failure custody.
+Project depends on Bridge for the existing provisioning records and channel
+install protocol; it defines no second format or protocol.
+
+[`layerfs-api::project`](../../../engine/crates/layerfs-api/src/project/mod.rs) and its
+root retain the existing public names as re-exports. Its Control owner calls
+Project's `install_file` without changing correlation or quarantine. The
+[Node binding](../../../engine/crates/layerfs-node/src/project.rs) calls Project's Init once
+directly. This is ownership relocation only; no canonical identity, Store
+format, behavior or performance claim changes.

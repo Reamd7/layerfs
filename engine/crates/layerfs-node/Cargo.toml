@@ -1,0 +1,36 @@
+[package]
+name = "layerfs-node"
+description = "Node binding for the LayerFS JavaScript SDK: Store calls in-process (layerfs-store-service), Sandbox calls over layerfs-api"
+publish = false
+workspace = "../../.."
+edition.workspace = true
+version.workspace = true
+rust-version = "1.89"
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+layerfs-project = { path = "../layerfs-project" }
+layerfs-api = { path = "../layerfs-api" }
+layerfs-bridge = { path = "../layerfs-bridge" }
+layerfs-history = { path = "../../../core/crates/layerfs-history" }
+layerfs-persistence = { path = "../layerfs-persistence" }
+layerfs-sandbox = { path = "../layerfs-sandbox" }
+layerfs-storage = { path = "../../../core/crates/layerfs-storage" }
+layerfs-store-service = { path = "../layerfs-store-service" }
+layerfs-telemetry = { path = "../../../core/crates/layerfs-telemetry" }
+napi = "=2.16.17"
+napi-derive = "=2.16.13"
+
+[build-dependencies]
+napi-build = "=2.1.6"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+] }

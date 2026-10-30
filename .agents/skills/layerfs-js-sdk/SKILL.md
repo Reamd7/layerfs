@@ -157,12 +157,12 @@ overwrite it.
 
 ## Import the SDK
 
-The SDK is the `api/agent/sdk` folder of the LayerFS checkout. Link it into
+The SDK is the `api/agent` folder of the LayerFS checkout. Link it into
 your folder once:
 
 ```bash
 npm init -y >/dev/null && npm pkg set type=module
-npm install --no-audit --no-fund "file:$LAYERFS_REPO/api/agent/sdk"   # LAYERFS_REPO: the LayerFS checkout
+npm install --no-audit --no-fund "file:$LAYERFS_REPO/api/agent"   # LAYERFS_REPO: the LayerFS checkout
 ```
 
 Then, in any `.mjs` file:
@@ -362,7 +362,7 @@ For Rust projects, follow the live-checked [Cargo workflow](references/rules/car
 
 ## Methods
 
-Copied from [`api/how-to-use/agent.md`](../../../api/how-to-use/agent.md#methods), which is the source of truth.
+Copied from [`api/docs/agent.md`](../../../api/docs/agent.md#methods), which is the source of truth.
 Every method is positional and returns a Promise. Each group's page has, for every
 method, its arguments, result fields, refusals with what to do, limits and examples.
 
@@ -373,12 +373,12 @@ method, its arguments, result fields, refusals with what to do, limits and examp
 | [fs writes](references/methods/fs-write.md) | `write(branch, path, content, message?)`, `edit(branch, path, oldText, newText, message?)`, `apply(branch, changes, message?)`, `mkdir(branch, path, message?)`, `rm(branch, path, message?)`, `cp(branch, from, to, message?)`, `mv(branch, from, to, message?)` |
 | [branch](references/methods/branch.md) | `fork(name, fromRef?)`, `list_commits(branch, pageSize?, pagePos?)`, `diff_commits(from, to, pageSize?, pagePos?)`, `diff_branches(from, to, pageSize?, pagePos?)`, `merge(a, b, name, message?)`, `publish(branch, commit?)` |
 | [sandbox](references/methods/sandbox.md) | `create(options?)`, `list_workspaces(sandbox, pageSize?, pagePos?)`, `close(sandbox)` |
-| [workspace](references/methods/workspace.md) | `mount(sandbox, branch)` → `{ sandbox, path, image }`, `exec(ws, command, message?)`, `commit(ws, message?, force?)`, `unmount(ws, discard?)` |
+| [workspace](references/methods/workspace.md) | `mount(sandbox, branch)` → `{ sandbox, path, image }`, `exec(ws, command, message?)`, `commit(ws, message?, force?)`, `unmount(ws, discard?, force?)` |
 
 A `ref` is `main`, a Branch name, a Commit id or a Layer id. Paths are absolute in the
 view (`/src/index.js`). Pages are `{ items, hasMore }`; advance with
 `pagePos + items.length`.
 
-Deeper material: the [SDK guide](../../../api/how-to-use/agent.md), the
-[`layerfs` command](../../../api/how-to-use/agent.md#the-layerfs-command) and the
+Deeper material: the [SDK guide](../../../api/docs/agent.md), the
+[`layerfs` command](../../../api/docs/agent.md#the-layerfs-command) and the
 [0.1.7 SDK and UI guide](../../../docs/versioned/0.1.7/sdk-and-ui.md).
